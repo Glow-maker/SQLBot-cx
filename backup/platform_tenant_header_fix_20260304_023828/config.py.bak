@@ -70,10 +70,6 @@ class Settings(BaseSettings):
     PLATFORM_AUTH_LOGOUT_PATH: str = "/admin-api/system/auth/logout"
     PLATFORM_AUTH_LOGIN_PROXY_ENABLED: bool = False
     PLATFORM_AUTH_FIXED_TENANT_NAME: str | None = "八院"
-    PLATFORM_AUTH_FIXED_TENANT_ID: int | None = None
-    PLATFORM_AUTH_TENANT_ID_BY_NAME_PATH: str = "/admin-api/system/tenant/get-id-by-name"
-    PLATFORM_AUTH_TENANT_ID_HEADER: str = "tenant-id"
-    PLATFORM_AUTH_REQUIRE_TENANT_ID_HEADER: bool = True
     PLATFORM_AUTH_LOGIN_REMEMBER_ME: bool = True
     PLATFORM_AUTH_HTTP_TIMEOUT_SECONDS: float = 10.0
     PLATFORM_AUTH_REDIS_URL: str | None = None
@@ -82,8 +78,6 @@ class Settings(BaseSettings):
     PLATFORM_AUTH_REQUIRE_USER_TYPE: int | None = None
     PLATFORM_AUTH_STRICT_MODE: bool = False
     PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER: bool = True
-    PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN: bool = False
-    PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS: str = "admin"
 
     CACHE_TYPE: Literal["redis", "memory", "None"] = "memory"
     CACHE_REDIS_URL: str | None = None  # Redis URL, e.g., "redis://[[username]:[password]]@localhost:6379/0"
@@ -156,7 +150,6 @@ class Settings(BaseSettings):
                      'PLATFORM_AUTH_ENABLED',
                      'PLATFORM_AUTH_STRICT_MODE',
                      'PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER',
-                     'PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN',
                      mode='before')
     @classmethod
     def lowercase_bool(cls, v: Any) -> Any:

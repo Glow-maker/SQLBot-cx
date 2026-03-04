@@ -22,41 +22,6 @@ from ..crud.user import authenticate
 router = APIRouter(tags=["login"], prefix="/login")
 
 
-def _get_local_admin_accounts() -> set[str]:
-    raw_accounts = settings.PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS or ""
-    return {item.strip().lower() for item in str(raw_accounts).split(",") if item.strip()}
-
-
-def _is_local_admin_account(account: str) -> bool:
-    if not settings.PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN:
-        return False
-    account_text = str(account).strip().lower()
-    if not account_text:
-        return False
-    return account_text in _get_local_admin_accounts()
-
-
-def _local_sqlbot_login(
-    session: SessionDep,
-    trans: Trans,
-    account: str,
-    password: str,
-) -> Token:
-    user: BaseUserDTO = authenticate(session=session, account=account, password=password)
-    if not user:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.account_pwd_error'))
-    if not user.oid or user.oid == 0:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.no_associated_ws', msg=trans('i18n_concat_admin')))
-    if user.status != 1:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.user_disable', msg=trans('i18n_concat_admin')))
-    if user.origin is not None and user.origin != 0:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.origin_error'))
-
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    user_dict = user.to_dict()
-    return Token(access_token=create_access_token(user_dict, expires_delta=access_token_expires))
-
-
 def _build_platform_auth_url(path: str) -> str:
     base_url = settings.PLATFORM_AUTH_BASE_URL
     if not base_url:
@@ -175,17 +140,26 @@ async def local_login(
     origin_account = await sqlbot_decrypt(form_data.username)
     origin_pwd = await sqlbot_decrypt(form_data.password)
 
-    # 允许保留 SQLBot 本地管理员登录（例如 admin），避免全量切到中台后失去本地运维入口
-    if _is_local_admin_account(origin_account):
-        return _local_sqlbot_login(session, trans, origin_account, origin_pwd)
-
     if settings.PLATFORM_AUTH_LOGIN_PROXY_ENABLED:
         return await _platform_login(origin_account, origin_pwd, trans)
 
     if settings.PLATFORM_AUTH_ENABLED and settings.PLATFORM_AUTH_STRICT_MODE:
         raise HTTPException(status_code=403, detail="Local login is disabled in platform auth strict mode.")
 
-    return _local_sqlbot_login(session, trans, origin_account, origin_pwd)
+    user: BaseUserDTO = authenticate(session=session, account=origin_account, password=origin_pwd)
+    if not user:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.account_pwd_error'))
+    if not user.oid or user.oid == 0:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.no_associated_ws', msg = trans('i18n_concat_admin')))
+    if user.status != 1:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.user_disable', msg = trans('i18n_concat_admin')))
+    if user.origin is not None and user.origin != 0:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.origin_error'))
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    user_dict = user.to_dict()
+    return Token(access_token=create_access_token(
+        user_dict, expires_delta=access_token_expires
+    ))
 
 @router.post("/logout")    
 async def logout(session: SessionDep, request: Request, dto: LogoutSchema):

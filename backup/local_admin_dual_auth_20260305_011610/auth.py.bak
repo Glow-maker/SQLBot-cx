@@ -140,68 +140,36 @@ class TokenMiddleware(BaseHTTPMiddleware):
                 if platform_identity:
                     return True, self._build_user_from_platform_token(platform_identity)
                 if platform_auth_strict:
-                    local_admin_user = await self._try_local_admin_user(param, trans)
-                    if local_admin_user:
-                        return True, local_admin_user
                     return False, "Invalid or expired platform access token!"
 
             # strict 模式下不允许回退本地 JWT
             if platform_auth_strict:
-                local_admin_user = await self._try_local_admin_user(param, trans)
-                if local_admin_user:
-                    return True, local_admin_user
                 return False, "Platform auth strict mode is enabled, local JWT token is disabled!"
 
             # 兼容模式下保留 SQLBot 原 JWT 逻辑
-            session_user = await self._build_user_from_local_jwt(param, trans)
-            return True, session_user
+            payload = jwt.decode(
+                param, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+            )
+            token_data = TokenPayload(**payload)
+            with Session(engine) as session:
+                session_user = await get_user_info(session = session, user_id = token_data.id)
+                if not session_user:
+                    message = trans('i18n_not_exist', msg = trans('i18n_user.account'))
+                    raise Exception(message)
+                session_user = UserInfoDTO.model_validate(session_user)
+                if session_user.status != 1:
+                    message = trans('i18n_login.user_disable', msg = trans('i18n_concat_admin'))
+                    raise Exception(message)
+                if not session_user.oid or session_user.oid == 0:
+                    message = trans('i18n_login.no_associated_ws', msg = trans('i18n_concat_admin'))
+                    raise Exception(message)
+                return True, session_user
         except Exception as e:
             msg = str(e)
             SQLBotLogUtil.exception(f"Token validation error: {msg}")
             if 'expired' in msg:
                 return False, jwt.ExpiredSignatureError(trans('i18n_permission.token_expired')) 
             return False, e
-
-    def _get_local_admin_accounts(self) -> set[str]:
-        raw_accounts = settings.PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS or ""
-        return {item.strip().lower() for item in str(raw_accounts).split(",") if item.strip()}
-
-    def _is_local_admin_account(self, account: Optional[str]) -> bool:
-        if not settings.PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN:
-            return False
-        if not account:
-            return False
-        return str(account).strip().lower() in self._get_local_admin_accounts()
-
-    async def _build_user_from_local_jwt(self, token_value: str, trans: I18n) -> UserInfoDTO:
-        payload = jwt.decode(
-            token_value, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
-        )
-        token_data = TokenPayload(**payload)
-        with Session(engine) as session:
-            session_user = await get_user_info(session=session, user_id=token_data.id)
-            if not session_user:
-                message = trans('i18n_not_exist', msg=trans('i18n_user.account'))
-                raise Exception(message)
-            session_user = UserInfoDTO.model_validate(session_user)
-            if session_user.status != 1:
-                message = trans('i18n_login.user_disable', msg=trans('i18n_concat_admin'))
-                raise Exception(message)
-            if not session_user.oid or session_user.oid == 0:
-                message = trans('i18n_login.no_associated_ws', msg=trans('i18n_concat_admin'))
-                raise Exception(message)
-            return session_user
-
-    async def _try_local_admin_user(self, token_value: str, trans: I18n) -> Optional[UserInfoDTO]:
-        if not settings.PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN:
-            return None
-        try:
-            local_user = await self._build_user_from_local_jwt(token_value, trans)
-        except Exception:
-            return None
-        if self._is_local_admin_account(local_user.account):
-            return local_user
-        return None
 
     def _is_chat_request(self, request_path: Optional[str]) -> bool:
         if not request_path:

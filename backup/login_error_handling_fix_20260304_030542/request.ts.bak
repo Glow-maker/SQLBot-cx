@@ -217,20 +217,10 @@ class HttpService {
         case 400:
           errorMessage = 'Invalid request parameters'
           break
-        case 401: {
+        case 401:
           errorMessage = error.response?.data
             ? error.response.data.toString()
             : 'Unauthorized, please login again'
-          const requestUrl = String(error.config?.url || '')
-          const isLoginRequest = requestUrl.includes('/login/access-token')
-          if (isLoginRequest) {
-            ElMessage({
-              message: errorMessage,
-              type: 'error',
-              showClose: true,
-            })
-            return
-          }
           // Redirect to login page if needed
           if (assistantStore.getAssistant) {
             wsCache.delete('user.token')
@@ -251,7 +241,6 @@ class HttpService {
             window.location.reload()
           }, 2000)
           return
-        }
         // break
         case 403:
           errorMessage = 'Access denied'
