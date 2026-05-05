@@ -1,5 +1,7 @@
 import json
 import re
+import threading
+import time
 import urllib
 from typing import Optional
 
@@ -253,9 +255,49 @@ class AssistantOutDs:
 
 
 class AssistantOutDsFactory:
+    """
+    主线二 Phase 2a：进程内 TTL 缓存 AssistantOutDs 实例，避免每次请求都同步 HTTP 拉取
+    中台 data 服务（高 QPS 场景下会打爆中台）。
+
+    缓存键：(assistant.id, assistant.oid, configuration_hash, certificate_hash)
+    - 同一用户 + 同一 endpoint + 同一 token 的并发请求复用同一份 ds_list
+    - token 变化（Authorization header 不同）→ certificate_hash 变 → 新建实例
+    - 开关关闭或 TTL=0 时退化为每次新建（与改造前行为一致）
+    """
+
+    _cache: dict = {}
+    _lock = threading.Lock()
+
+    @staticmethod
+    def _cache_key(assistant: AssistantHeader) -> tuple:
+        return (
+            getattr(assistant, "id", 0),
+            getattr(assistant, "oid", 0),
+            hash(assistant.configuration or ""),
+            hash(assistant.certificate or ""),
+        )
+
     @staticmethod
     def get_instance(assistant: AssistantHeader) -> AssistantOutDs:
-        return AssistantOutDs(assistant)
+        ttl = settings.PLATFORM_DATASOURCE_CACHE_TTL_SECONDS
+        if not ttl or ttl <= 0:
+            return AssistantOutDs(assistant)
+        key = AssistantOutDsFactory._cache_key(assistant)
+        now = time.time()
+        with AssistantOutDsFactory._lock:
+            entry = AssistantOutDsFactory._cache.get(key)
+            if entry and entry[0] > now:
+                return entry[1]
+        # 构造在锁外执行（构造涉及阻塞 HTTP，避免锁住其他 key）
+        instance = AssistantOutDs(assistant)
+        with AssistantOutDsFactory._lock:
+            AssistantOutDsFactory._cache[key] = (now + ttl, instance)
+            # 简单清理：超过 256 项时丢弃过期项
+            if len(AssistantOutDsFactory._cache) > 256:
+                AssistantOutDsFactory._cache = {
+                    k: v for k, v in AssistantOutDsFactory._cache.items() if v[0] > now
+                }
+        return instance
 
 
 def get_out_ds_conf(ds: AssistantOutDsSchema, timeout: int = 30) -> str:

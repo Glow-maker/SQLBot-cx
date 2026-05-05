@@ -524,7 +524,16 @@ class LLMService:
                 for ds in _session.exec(stmt)
             ]
         if not _ds_list:
-            raise SingleMessageError('No available datasource configuration found')
+            # 主线二 Phase 2a：流程图"暂无相关数据表"分支
+            # 返回结构化 payload 供前端展示"暂无相关数据表 + 录入需求"引导
+            # 保持沿用现有 SingleMessageError→SSE error 的惯例（参见 run_task 异常处理 line 1343）
+            raise SingleMessageError(orjson.dumps({
+                'type': 'datasource_not_found',
+                'reason': 'empty_available_datasource',
+                'message': 'No datasource available for current user',
+                'candidates': [],
+                'actions': [{'type': 'record_question', 'label': '录入需求'}],
+            }).decode())
         ignore_auto_select = _ds_list and len(_ds_list) == 1
         # ignore auto select ds
 
@@ -619,9 +628,23 @@ class LLMService:
                         raise e
 
             elif data['fail']:
-                raise SingleMessageError(data['fail'])
+                # 主线二 Phase 2a：流程图"暂无相关数据表"分支（LLM 判定无关联数据源，给出 fail 文案）
+                raise SingleMessageError(orjson.dumps({
+                    'type': 'datasource_not_found',
+                    'reason': 'no_candidate_reach_threshold',
+                    'message': data['fail'],
+                    'candidates': [{'id': _ds.get('id'), 'name': _ds.get('name')} for _ds in _ds_list],
+                    'actions': [{'type': 'record_question', 'label': '录入需求'}],
+                }).decode())
             else:
-                raise SingleMessageError('No available datasource configuration found')
+                # 主线二 Phase 2a：LLM 返回 id=0 但未给 fail 的兜底
+                raise SingleMessageError(orjson.dumps({
+                    'type': 'datasource_not_found',
+                    'reason': 'llm_no_choice',
+                    'message': 'LLM did not pick any datasource',
+                    'candidates': [{'id': _ds.get('id'), 'name': _ds.get('name')} for _ds in _ds_list],
+                    'actions': [{'type': 'record_question', 'label': '录入需求'}],
+                }).decode())
 
         except Exception as e:
             _error = e

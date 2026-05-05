@@ -66,6 +66,10 @@ class TokenMiddleware(BaseHTTPMiddleware):
         validate_pass, data = await self.validateToken(token, trans, request.url.path)
         if validate_pass:
             request.state.current_user = data
+            # 主线二 Phase 2a：当中台数据源接入开启时，注入虚拟 assistant 到 request.state，
+            # 让下游 chat 主流程通过现有 AssistantOutDs 链路从中台 data 服务远程拉 ds，
+            # chat 代码无需任何分支改造。
+            self._inject_platform_assistant_if_enabled(request, token)
             return await call_next(request)
         
         message = trans('i18n_permission.authenticate_invalid', msg = data)
@@ -208,6 +212,73 @@ class TokenMiddleware(BaseHTTPMiddleware):
             return False
         chat_prefix = f"{settings.API_V1_STR}/chat"
         return request_path == chat_prefix or request_path.startswith(f"{chat_prefix}/")
+
+    def _inject_platform_assistant_if_enabled(self, request: Request, token_value: Optional[str]) -> None:
+        """
+        主线二 Phase 2a：注入"虚拟 assistant"到 request.state，让 chat 主流程通过现有
+        AssistantOutDs 链路从中台 data 服务远程拉数据源（无需改 chat 任何分支）。
+
+        触发条件：
+        - settings.PLATFORM_DATASOURCE_ENABLED = true
+        - settings.PLATFORM_DATASOURCE_BASE_URL 已配置
+        - 已成功解析出 current_user（说明已通过中台或本地认证）
+        - request.state.assistant 还未被赋值（避免覆盖业务真实 assistant 链路）
+
+        构造的虚拟 AssistantHeader：
+        - type=1（落入 dynamic_ds_types，触发 AssistantOutDsFactory 路径）
+        - configuration: {"endpoint": <list_path>, "timeout": ...}
+        - certificate: [{"target":"header","key":"Authorization","value":"Bearer <token>"},
+                        {"target":"header","key":"tenant-id","value":"<oid>"}]
+        - domain: PLATFORM_DATASOURCE_BASE_URL（AssistantOutDs 拼接相对 endpoint 时用）
+        """
+        if not settings.PLATFORM_DATASOURCE_ENABLED:
+            return
+        base_url = settings.PLATFORM_DATASOURCE_BASE_URL
+        if not base_url:
+            return
+        # 已有真实 assistant（如 X-SQLBOT-ASSISTANT-TOKEN 路径），不覆盖
+        if getattr(request.state, "assistant", None):
+            return
+        current_user: Optional[UserInfoDTO] = getattr(request.state, "current_user", None)
+        if current_user is None:
+            return
+        if not token_value:
+            return
+        scheme, param = get_authorization_scheme_param(token_value)
+        if not param:
+            param = token_value
+        if scheme and scheme.lower() == "bearer":
+            authorization_value = f"Bearer {param}"
+        else:
+            authorization_value = token_value
+
+        configuration = json.dumps({
+            "endpoint": settings.PLATFORM_DATASOURCE_LIST_PATH,
+            "timeout": int(settings.PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS),
+            "oid": int(current_user.oid) if current_user.oid is not None else 1,
+            # 标记位：让上层（如 cache）知道这是中台虚拟 assistant，不与本地 assistant 混淆
+            "platform_virtual": True,
+        })
+        certificate = json.dumps([
+            {"target": "header", "key": "Authorization", "value": authorization_value},
+            {"target": "header", "key": settings.PLATFORM_AUTH_TENANT_ID_HEADER,
+             "value": str(int(current_user.oid)) if current_user.oid is not None else ""},
+        ])
+        try:
+            virtual_assistant = AssistantHeader(
+                id=0,  # 虚拟 ID；用于区分真实 assistant
+                name="platform-virtual",
+                domain=str(base_url).rstrip("/"),
+                type=1,  # 落入 dynamic_ds_types=[1,3]
+                configuration=configuration,
+                certificate=certificate,
+                oid=int(current_user.oid) if current_user.oid is not None else 1,
+                online=True,
+            )
+            request.state.assistant = virtual_assistant
+        except Exception as exc:
+            # 注入失败不阻塞主流程，仅记日志，下游 select_datasource 会回退本地 ds
+            SQLBotLogUtil.exception(f"Inject platform virtual assistant failed: {exc}")
 
     def _build_user_from_platform_token(self, identity: PlatformTokenIdentity) -> UserInfoDTO:
         # 中台 token 恢复用户：chat 仅依赖 id/account/oid，其他字段使用安全默认值
