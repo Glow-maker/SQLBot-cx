@@ -20,6 +20,7 @@ from apps.chat.models.chat_model import CreateChat, ChatRecord, RenameChat, Chat
 from apps.chat.task.llm import LLMService
 from apps.swagger.i18n import PLACEHOLDER_PREFIX
 from apps.system.schemas.permission import SqlbotPermission, require_permissions
+from common.core.config import settings
 from common.core.deps import CurrentAssistant, SessionDep, CurrentUser, Trans
 from common.utils.command_utils import parse_quick_command
 from common.utils.data_format import DataFormat
@@ -189,7 +190,10 @@ async def delete(session: SessionDep, current_user: CurrentUser, chart_id: int, 
 ))
 async def start_chat(session: SessionDep, current_user: CurrentUser, create_chat_obj: CreateChat):
     try:
-        return create_chat(session, current_user, create_chat_obj)
+        # 主线二 Phase 1：当中台数据源接入开启时，允许 chat/start 不带 datasource，
+        # 由 chat/question 阶段从中台远程拉取候选并自动选择。开关关闭时保持原逻辑（必填）。
+        require_datasource = not settings.PLATFORM_DATASOURCE_ENABLED
+        return create_chat(session, current_user, create_chat_obj, require_datasource=require_datasource)
     except Exception as e:
         raise HTTPException(
             status_code=500,

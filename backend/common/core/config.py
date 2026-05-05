@@ -85,6 +85,22 @@ class Settings(BaseSettings):
     PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN: bool = False
     PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS: str = "admin"
 
+    # === 数据中台 data 服务（数据源元数据来源，主线二 Phase 2 启用）===
+    # 开关：为 false 时 SQLBot 行为完全与当前一致（本地 ds），为 true 时 TokenMiddleware
+    # 会在解析出中台身份后注入虚拟 assistant 并由 AssistantOutDs 远程拉取 ds 列表
+    PLATFORM_DATASOURCE_ENABLED: bool = False
+    PLATFORM_DATASOURCE_BASE_URL: str | None = None
+    PLATFORM_DATASOURCE_LIST_PATH: str = "/openapi/sqlbot/datasources/query"
+    PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
+    # AssistantOutDs 远程拉取结果的本地 TTL 缓存秒数，避免打爆中台
+    PLATFORM_DATASOURCE_CACHE_TTL_SECONDS: int = 60
+
+    # === 表级权限校验（主线二 Phase 3 启用，fail-closed）===
+    PLATFORM_PERMISSION_CHECK_PATH: str = "/openapi/sqlbot/table-permissions/check"
+    PLATFORM_PERMISSION_APPLY_PATH: str = "/openapi/sqlbot/permission-applies"
+    # 未匹配到 ds 时记录问题（供数据治理侧消费）
+    PLATFORM_UNMATCHED_QUESTION_PATH: str = "/openapi/sqlbot/unmatched-questions"
+
     CACHE_TYPE: Literal["redis", "memory", "None"] = "memory"
     CACHE_REDIS_URL: str | None = None  # Redis URL, e.g., "redis://[[username]:[password]]@localhost:6379/0"
 
@@ -157,6 +173,7 @@ class Settings(BaseSettings):
                      'PLATFORM_AUTH_STRICT_MODE',
                      'PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER',
                      'PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN',
+                     'PLATFORM_DATASOURCE_ENABLED',
                      mode='before')
     @classmethod
     def lowercase_bool(cls, v: Any) -> Any:
