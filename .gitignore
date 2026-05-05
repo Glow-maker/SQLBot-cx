@@ -8,6 +8,9 @@ node_modules/
 *-lock.json
 components.d.ts
 
+# 集成改造期内部文档，暂不上传（保留 archive 与项目原有文档）
+docs/integration/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
