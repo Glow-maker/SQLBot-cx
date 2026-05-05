@@ -24,6 +24,10 @@ from sqlbot_xpack.license.license_manage import SQLBotLicenseUtil
 from sqlmodel import Session
 
 from apps.ai_model.model_factory import LLMConfig, LLMFactory, get_default_config
+from common.utils.platform_permission import (
+    PermissionCheckResult, check_table_permissions, denied_tables_to_sse_payload, is_permission_check_enabled,
+)
+from common.utils.sql_parser import extract_table_names, merge_tables
 from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     save_error_message, save_sql_exec_data, save_chart_answer, save_chart, \
     finish_record, save_analysis_answer, save_predict_answer, save_predict_data, \
@@ -1185,6 +1189,17 @@ class LLMService:
 
             sql_operate = OperationEnum.GENERATE_SQL
             sql, tables = self.check_sql(session=_session, res=full_sql_text, operate=sql_operate)
+
+            # ===== 主线二 Phase 3a：Gate 1 表级权限校验 =====
+            # 拿到 LLM 第一版 SQL 与 tables 后立即校验，主校验，覆盖 90% 场景。
+            # 启用条件：PLATFORM_DATASOURCE_ENABLED=true 且 BASE_URL 已配置。
+            # fail-closed：服务异常或 SQL parse 失败 → 拒绝执行。
+            gate1_result = self._do_permission_check(sql=sql, llm_tables=tables, gate_label="gate1")
+            if gate1_result is not None and not gate1_result.allowed:
+                raise SingleMessageError(orjson.dumps(
+                    denied_tables_to_sse_payload(gate1_result, gate_label="gate1")
+                ).decode())
+
             if ((not self.current_assistant or is_page_embedded) and is_normal_user(
                     self.current_user)) or use_dynamic_ds:
                 sql_result = None
@@ -1240,6 +1255,16 @@ class LLMService:
             self.current_logs[OperationEnum.EXECUTE_SQL] = start_log(session=_session,
                                                                      operate=OperationEnum.EXECUTE_SQL,
                                                                      record_id=self.record.id, local_operation=True)
+
+            # ===== 主线二 Phase 3a：Gate 2 表级权限复核 =====
+            # 防止 generate_filter / generate_assistant_filter / check_save_sql / 动态 SQL 改写
+            # 引入新表绕过 Gate 1。对最终要执行的 SQL 二次解析校验。
+            gate2_result = self._do_permission_check(sql=real_execute_sql, llm_tables=None, gate_label="gate2")
+            if gate2_result is not None and not gate2_result.allowed:
+                raise SingleMessageError(orjson.dumps(
+                    denied_tables_to_sse_payload(gate2_result, gate_label="gate2")
+                ).decode())
+
             result = self.execute_sql(sql=real_execute_sql)
             self.current_logs[OperationEnum.EXECUTE_SQL] = end_log(session=_session,
                                                                    log=self.current_logs[OperationEnum.EXECUTE_SQL],
@@ -1578,6 +1603,68 @@ class LLMService:
                     raise SingleMessageError(msg)
             except Exception as e:
                 raise SingleMessageError(f"ds is invalid [{str(e)}]")
+
+    # ===== 主线二 Phase 3a：双 Gate 表级权限校验 =====
+    def _extract_authorization_header(self) -> Optional[str]:
+        """
+        从 current_assistant.certificate（中台 Phase 2a 注入或真实 assistant）取 Authorization 头，
+        透传给中台权限服务。失败返回 None。
+        """
+        if not self.current_assistant or not self.current_assistant.certificate:
+            return None
+        try:
+            cert_list = json.loads(self.current_assistant.certificate)
+        except Exception:
+            return None
+        if not isinstance(cert_list, list):
+            return None
+        for item in cert_list:
+            if not isinstance(item, dict):
+                continue
+            if item.get("target") == "header" and str(item.get("key", "")).lower() == "authorization":
+                value = item.get("value")
+                if value:
+                    return str(value)
+        return None
+
+    def _do_permission_check(
+        self, sql: str, llm_tables: Optional[list], gate_label: str,
+    ) -> Optional[PermissionCheckResult]:
+        """
+        统一的权限校验入口。fail-closed：
+          - 关闭开关时返回 None（调用方"放行"）
+          - 启用时一定返回 PermissionCheckResult（allowed=True/False）
+          - SQL parse 失败时返回 allowed=False，reason='sql_parse_failed'
+        """
+        if not is_permission_check_enabled():
+            return None
+
+        dialect = None
+        if self.ds is not None:
+            dialect = getattr(self.ds, "type", None) or None
+
+        parser_tables = extract_table_names(sql, dialect=dialect)
+        if parser_tables is None:
+            # parse 失败：fail-closed 拒绝，避免越权
+            SQLBotLogUtil.warning(f"[{gate_label}] SQL parser failed, deny by default")
+            return PermissionCheckResult(allowed=False, reason="sql_parse_failed")
+
+        merged = merge_tables(llm_tables, parser_tables)
+        if not merged:
+            # SQL 不涉及任何表（如纯 SELECT 1），放行
+            return PermissionCheckResult(allowed=True, raw_payload={"empty_tables": True})
+
+        ds_id = getattr(self.ds, "id", None) if self.ds is not None else None
+        tenant_id = getattr(self.current_user, "oid", None) if self.current_user else None
+        return check_table_permissions(
+            authorization_header=self._extract_authorization_header(),
+            tenant_id=tenant_id,
+            datasource_id=ds_id,
+            sql=sql,
+            tables=sorted(merged),
+            chat_id=getattr(self.record, "chat_id", None) if self.record else None,
+            record_id=getattr(self.record, "id", None) if self.record else None,
+        )
 
 
 def execute_sql_with_db(db: SQLDatabase, sql: str) -> str:
