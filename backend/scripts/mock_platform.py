@@ -128,6 +128,14 @@ class Handler(BaseHTTPRequestHandler):
             log.info("ds query -> 200 (1 ds)")
             self._send_json(200, {"code": 0, "data": [_fixed_datasource()]})
             return
+        # 主线一：tenant-id by name（中台 OAuth2 登录前置查询）
+        if self.path.startswith("/admin-api/system/tenant/get-id-by-name"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            name = qs.get("name", [""])[0]
+            log.info("tenant-by-name name=%s -> 124", name)
+            self._send_json(200, {"code": 0, "data": 124})
+            return
         self._send_json(404, {"code": 404, "message": f"unknown path {self.path}"})
 
     # POST /openapi/sqlbot/table-permissions/check
