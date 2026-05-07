@@ -10,13 +10,14 @@ from urllib.parse import quote
 
 import orjson
 import pandas as pd
-from fastapi import APIRouter, File, UploadFile, HTTPException, Path
+from fastapi import APIRouter, File, UploadFile, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_
 
 from apps.db.db import get_schema
 from apps.db.engine import get_engine_conn
 from apps.swagger.i18n import PLACEHOLDER_PREFIX
+from apps.system.crud.assistant import AssistantOutDsFactory
 from apps.system.schemas.permission import SqlbotPermission, require_permissions
 from common.core.config import settings
 from common.core.deps import SessionDep, CurrentUser, Trans
@@ -43,7 +44,30 @@ async def query_by_oid(session: SessionDep, user: CurrentUser, oid: int) -> List
 
 @router.get("/list", response_model=List[CoreDatasource], summary=f"{PLACEHOLDER_PREFIX}ds_list",
             description=f"{PLACEHOLDER_PREFIX}ds_list_description")
-async def datasource_list(session: SessionDep, user: CurrentUser):
+async def datasource_list(request: Request, session: SessionDep, user: CurrentUser):
+    virtual_assistant = getattr(request.state, "assistant", None)
+    if virtual_assistant and virtual_assistant.type in (1, 3):
+        try:
+            out_ds = AssistantOutDsFactory.get_instance(virtual_assistant)
+            ds_list = out_ds.ds_list or []
+            return [
+                CoreDatasource(
+                    id=ds.id,
+                    name=ds.name,
+                    description=ds.description or "",
+                    type=ds.type,
+                    type_name=ds.type_name or ds.type,
+                    configuration="",
+                    create_by=user.id,
+                    oid=user.oid or 1,
+                    status="Success",
+                    num="",
+                )
+                for ds in ds_list
+                if ds.id is not None
+            ]
+        except Exception as exc:
+            SQLBotLogUtil.warning(f"Platform virtual ds list fallback to local: {exc}")
     return get_datasource_list(session=session, user=user)
 
 

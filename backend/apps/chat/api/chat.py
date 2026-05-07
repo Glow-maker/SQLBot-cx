@@ -5,7 +5,7 @@ from typing import Optional, List
 
 import orjson
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, select
 from starlette.responses import JSONResponse
@@ -188,12 +188,17 @@ async def delete(session: SessionDep, current_user: CurrentUser, chart_id: int, 
     module=OperationModules.CHAT,
     result_id_expr="id"
 ))
-async def start_chat(session: SessionDep, current_user: CurrentUser, create_chat_obj: CreateChat):
+async def start_chat(request: Request, session: SessionDep, current_user: CurrentUser, create_chat_obj: CreateChat):
     try:
         # 主线二 Phase 1：当中台数据源接入开启时，允许 chat/start 不带 datasource，
         # 由 chat/question 阶段从中台远程拉取候选并自动选择。开关关闭时保持原逻辑（必填）。
         require_datasource = not settings.PLATFORM_DATASOURCE_ENABLED
-        return create_chat(session, current_user, create_chat_obj, require_datasource=require_datasource)
+        # 主线二 Phase 2b：若请求已注入中台虚拟 assistant，透传给 create_chat，
+        # 让 chat.datasource 以中台 ds 语义（AssistantOutDs）而非本地 CoreDatasource 绑定
+        virtual_assistant = getattr(request.state, "assistant", None)
+        return create_chat(session, current_user, create_chat_obj,
+                           require_datasource=require_datasource,
+                           current_assistant=virtual_assistant)
     except Exception as e:
         raise HTTPException(
             status_code=500,

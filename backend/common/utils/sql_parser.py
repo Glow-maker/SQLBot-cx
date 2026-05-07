@@ -42,9 +42,17 @@ def extract_table_names(sql: str, dialect: Optional[str] = None) -> Optional[set
         return set()
     try:
         parsed_list = sqlglot.parse(sql, dialect=dialect)
-    except Exception as exc:
+    except sqlglot.errors.ParseError as exc:
         SQLBotLogUtil.warning(f"SQL parse failed (dialect={dialect}): {exc}")
         return None
+    except Exception as exc:
+        # 未知 dialect（如 dm）等非语法错误：退回通用 dialect 再试一次
+        SQLBotLogUtil.warning(f"SQL parse with dialect={dialect} failed ({exc}); retry with generic dialect")
+        try:
+            parsed_list = sqlglot.parse(sql, dialect=None)
+        except Exception as exc2:
+            SQLBotLogUtil.warning(f"SQL parse fallback also failed: {exc2}")
+            return None
 
     table_names: set[str] = set()
     cte_aliases: set[str] = set()

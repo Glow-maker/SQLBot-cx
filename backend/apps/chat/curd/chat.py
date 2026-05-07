@@ -715,7 +715,8 @@ def create_chat(session: SessionDep, current_user: CurrentUser, create_chat_obj:
         if current_assistant and current_assistant.type == 1:
             out_ds_instance: AssistantOutDs = AssistantOutDsFactory.get_instance(current_assistant)
             ds = out_ds_instance.get_ds(chat.datasource)
-            ds.type_name = DB.get_db(ds.type)
+            # DB.get_db 返回 enum member，.db_name 取 display name (如 '达梦')
+            ds.type_name = DB.get_db(ds.type).db_name
         else:
             ds = session.get(CoreDatasource, create_chat_obj.datasource)
             if ds.oid != current_user.oid:
