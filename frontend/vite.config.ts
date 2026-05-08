@@ -5,14 +5,18 @@ import Components from 'unplugin-vue-components-secondary/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components-secondary/resolvers'
 import path from 'path'
 import svgLoader from 'vite-svg-loader'
-export default defineConfig(({ mode }) => {
+import qiankun from 'vite-plugin-qiankun'
+export default defineConfig(({ mode }: any): any => {
   const env = loadEnv(mode, process.cwd())
   console.info(mode)
   console.info(env)
   return {
-    base: './',
+    base: mode === 'development' ? '/' : '/sqlbot/',
     plugins: [
       vue(),
+      qiankun('SQLBot', {
+        useDevMode: true,
+      }),
       AutoImport({
         resolvers: [ElementPlusResolver()],
         eslintrc: {
@@ -46,12 +50,21 @@ export default defineConfig(({ mode }) => {
           manualChunks: {
             'element-plus-secondary': ['element-plus-secondary'],
           },
+          // 确保资源路径使用相对路径
+          assetFileNames: 'assets/[name].[hash].[ext]',
+          chunkFileNames: 'assets/[name].[hash].js',
+          entryFileNames: 'assets/[name].[hash].js',
         },
       },
     },
     esbuild: {
       jsxFactory: 'h',
       jsxFragment: 'Fragment',
+    },
+    server: {
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+      },
     },
   }
 })

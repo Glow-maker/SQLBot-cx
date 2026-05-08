@@ -149,7 +149,7 @@ const props = withDefaults(
     cursor: pointer;
     margin-left: 8px;
     &:hover {
-      color: var(--ed-color-primary-15-d, #189e7a);
+      color: #189e7a;
       background: #1f23291a;
     }
   }
@@ -185,9 +185,6 @@ const props = withDefaults(
     top: 30px;
     right: 4px;
     z-index: 1;
-    &:hover {
-      background-color: #1f23291a !important;
-    }
   }
 
   .tool-btn {

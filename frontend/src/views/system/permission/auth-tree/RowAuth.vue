@@ -39,7 +39,7 @@ const submit = () => {
     errorMessage: errorMessage.value,
   })
 }
-const errorDetected = ({ filter_type, field_id, term, value, value_type, variable_id }: any) => {
+const errorDetected = ({ filter_type, field_id, term, value }: any) => {
   if (!field_id) {
     errorMessage.value = t('permission.cannot_be_empty_')
     return
@@ -50,16 +50,6 @@ const errorDetected = ({ filter_type, field_id, term, value, value_type, variabl
       return
     }
     if (!term.includes('null') && !term.includes('empty') && value === '') {
-      errorMessage.value = t('permission.filter_value_can_null')
-      return
-    }
-
-    if (
-      value_type === 'variable' &&
-      !term.includes('null') &&
-      !term.includes('empty') &&
-      [null, undefined, ''].includes(variable_id)
-    ) {
       errorMessage.value = t('permission.filter_value_can_null')
       return
     }
@@ -74,16 +64,7 @@ const dfsInit = (arr: any[]) => {
       const child = dfsInit(items)
       elementList.push({ logic, child })
     } else {
-      const {
-        enum_value,
-        field_id,
-        filter_type,
-        term,
-        value,
-        field,
-        value_type = 'normal',
-        variable_id = '',
-      } = ele
+      const { enum_value, field_id, filter_type, term, value, field } = ele
       const { name } = field || {}
       elementList.push({
         enum_value: enum_value.join(','),
@@ -92,8 +73,6 @@ const dfsInit = (arr: any[]) => {
         term,
         value,
         name,
-        value_type,
-        variable_id,
       })
     }
   })
@@ -111,24 +90,13 @@ const dfsSubmit = (arr: any[]) => {
         field_id: '',
         filter_type: '',
         term: '',
-        value_type: 'normal',
-        variable_id: undefined,
         type: 'tree',
         value: '',
         sub_tree: { logic, items: sub_tree },
       })
     } else {
-      const { enum_value, field_id, filter_type, term, value, name, value_type, variable_id } = ele
-      errorDetected({
-        enum_value,
-        field_id,
-        filter_type,
-        term,
-        value,
-        name,
-        value_type,
-        variable_id,
-      })
+      const { enum_value, field_id, filter_type, term, value, name } = ele
+      errorDetected({ enum_value, field_id, filter_type, term, value, name })
       if (field_id) {
         items.push({
           enum_value: enum_value ? enum_value.split(',') : [],
@@ -136,8 +104,6 @@ const dfsSubmit = (arr: any[]) => {
           filter_type,
           term,
           value,
-          value_type,
-          variable_id,
           type: 'item',
           sub_tree: null,
         })
@@ -281,8 +247,6 @@ const addCondReal = (type: any, logic: any) => {
           term: '',
           filter_type: 'logic',
           name: '',
-          value_type: 'normal',
-          variable_id: undefined,
         }
       : { child: [], logic }
   )

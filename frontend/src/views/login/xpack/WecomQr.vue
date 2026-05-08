@@ -1,9 +1,6 @@
 <template>
   <div class="sqlbot-wecom-qr-div">
-    <div
-      id="sqlbot-wecom-qr"
-      :class="isWecomClient ? 'sqlbot-wecom-qr-client' : 'sqlbot-wecom-qr'"
-    />
+    <div id="sqlbot-wecom-qr" :class="isBind ? 'sqlbot-wecom-bind-qr' : 'sqlbot-wecom-qr'" />
   </div>
 </template>
 
@@ -20,7 +17,6 @@ interface WecomInfo {
   redirect_uri: string
 }
 
-const isWecomClient = ref(false)
 const props = defineProps({
   isBind: propTypes.bool.def(false),
 })
@@ -72,7 +68,6 @@ const loadQr = (CORP_ID: string, AGENT_ID: string, STATE: string, REDIRECT_URI: 
       lang: getLocale() === 'en' ? 'en' : 'zh',
     },
     onCheckWeComLogin({ isWeComLogin }: { isWeComLogin: boolean }) {
-      isWecomClient.value = isWeComLogin
       console.log(isWeComLogin)
     },
     onLoginSuccess({ code }: { code: string }) {
@@ -106,14 +101,6 @@ init()
     transform-origin: top left;
     margin-top: -94px;
     margin-left: -30px;
-  }
-  .sqlbot-wecom-qr-client {
-    width: 234px;
-    height: 234px;
-    transform: scale(0.75);
-    transform-origin: top left;
-    margin-top: -35px;
-    margin-left: 0px;
   }
 }
 </style>

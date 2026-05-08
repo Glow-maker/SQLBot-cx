@@ -13,6 +13,8 @@ import { getLocale } from './utils'
 import { useAssistantStore } from '@/stores/assistant'
 import { useRouter } from 'vue-router'
 import JSONBig from 'json-bigint'
+import { qiankunWindow } from 'vite-plugin-qiankun/es/helper'
+
 // import { i18n } from '@/i18n'
 // const t = i18n.global.t
 const assistantStore = useAssistantStore()
@@ -94,7 +96,13 @@ class HttpService {
     this.instance.interceptors.request.use(
       async (config: InternalAxiosRequestConfig) => {
         // Add auth token
-        const token = wsCache.get('user.token')
+        let token = wsCache.get('user.token')
+        // 在微前端模式下，优先从全局对象获取token（如果基座设置了全局token）
+        if (qiankunWindow.__POWERED_BY_QIANKUN__ && window?.__INJECTED_LOGIN_STATE__?.token) {
+          token = window.__INJECTED_LOGIN_STATE__.token
+          // 同步到缓存中
+          wsCache.set('user.token', token)
+        }
         if (token && config.headers) {
           config.headers['X-SQLBOT-TOKEN'] = `Bearer ${token}`
         }
@@ -108,11 +116,10 @@ class HttpService {
             assistantStore.getCertificate
           ) {
             if (
-              /* (config.method?.toLowerCase() === 'get' && /\/chat\/\d+$/.test(config.url || '')) || */
-              /^\/chat/.test(config.url || '') ||
+              (config.method?.toLowerCase() === 'get' && /\/chat\/\d+$/.test(config.url || '')) ||
               config.url?.includes('/system/assistant/ds')
             ) {
-              await assistantStore.refreshCertificate(config.url || '')
+              await assistantStore.refreshCertificate()
             }
             config.headers['X-SQLBOT-ASSISTANT-CERTIFICATE'] = btoa(
               encodeURIComponent(assistantStore.getCertificate)
@@ -217,41 +224,44 @@ class HttpService {
         case 400:
           errorMessage = 'Invalid request parameters'
           break
-        case 401: {
+        case 401:
           errorMessage = error.response?.data
             ? error.response.data.toString()
             : 'Unauthorized, please login again'
-          const requestUrl = String(error.config?.url || '')
-          const isLoginRequest = requestUrl.includes('/login/access-token')
-          if (isLoginRequest) {
-            ElMessage({
-              message: errorMessage,
-              type: 'error',
-              showClose: true,
-            })
-            return
+          // 清除本地token
+          wsCache.delete('user.token')
+
+          // 清除全局对象中的登录态
+          if (window.__INJECTED_LOGIN_STATE__) {
+            delete window.__INJECTED_LOGIN_STATE__
           }
-          // Redirect to login page if needed
-          if (assistantStore.getAssistant) {
-            wsCache.delete('user.token')
-            if (router?.push) {
-              router.push(`/401?title=${encodeURIComponent(errorMessage)}`)
-            } else {
-              window.location.href = `/#/401?title=${encodeURIComponent(errorMessage)}`
-            }
-            return
-          }
+
+          // 显示错误信息
           ElMessage({
             message: errorMessage,
             type: 'error',
             showClose: true,
           })
+
+          // 延迟跳转，给用户时间看到错误信息
           setTimeout(() => {
-            wsCache.delete('user.token')
-            window.location.reload()
+            if (qiankunWindow.__POWERED_BY_QIANKUN__) {
+              // 微前端模式：跳转到基座的登录页
+              // 使用绝对路径确保跳转到根路径的登录页，而不是子应用路径下的登录页
+              window.location.href = window.location.origin + '/login'
+            } else if (assistantStore.getAssistant) {
+              // 助手模式：跳转到401页面
+              if (router?.push) {
+                router.push(`/401?title=${encodeURIComponent(errorMessage)}`)
+              } else {
+                window.location.href = `/401?title=${encodeURIComponent(errorMessage)}`
+              }
+            } else {
+              // 独立运行模式：重新加载页面
+              window.location.reload()
+            }
           }, 2000)
           return
-        }
         // break
         case 403:
           errorMessage = 'Access denied'
@@ -316,7 +326,13 @@ class HttpService {
   }
 
   public async fetchStream(url: string, data?: any, controller?: AbortController): Promise<any> {
-    const token = wsCache.get('user.token')
+    let token = wsCache.get('user.token')
+    // 在微前端模式下，优先从全局对象获取token（如果基座设置了全局token）
+    if (qiankunWindow.__POWERED_BY_QIANKUN__ && window?.__INJECTED_LOGIN_STATE__?.token) {
+      token = window.__INJECTED_LOGIN_STATE__.token
+      // 同步到缓存中
+      wsCache.set('user.token', token)
+    }
     const heads: any = {
       'Content-Type': 'application/json',
     }
@@ -332,7 +348,7 @@ class HttpService {
         !!(assistantStore.getType % 2) &&
         assistantStore.getCertificate
       ) {
-        await assistantStore.refreshCertificate(url)
+        await assistantStore.refreshCertificate()
         heads['X-SQLBOT-ASSISTANT-CERTIFICATE'] = btoa(
           encodeURIComponent(assistantStore.getCertificate)
         )

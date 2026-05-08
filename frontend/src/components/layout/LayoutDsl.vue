@@ -1,15 +1,15 @@
 <script lang="ts" setup>
 import { ref, computed, onUnmounted } from 'vue'
-import Menu from './Menu.vue'
-import custom_small from '@/assets/svg/logo-custom_small.svg'
-import Workspace from './Workspace.vue'
-import Person from './Person.vue'
-import LOGO_fold from '@/assets/LOGO-fold.svg'
-import icon_moments_categories_outlined from '@/assets/svg/icon_moments-categories_outlined.svg'
-import icon_side_fold_outlined from '@/assets/svg/icon_side-fold_outlined.svg'
-import icon_side_expand_outlined from '@/assets/svg/icon_side-expand_outlined.svg'
-import { useRoute, useRouter } from 'vue-router'
-import { useAppearanceStoreWithOut } from '@/stores/appearance'
+// import Menu from './Menu.vue'
+// import custom_small from '@/assets/svg/logo-custom_small.svg'
+// import Workspace from './Workspace.vue'
+// import Person from './Person.vue'
+// import LOGO_fold from '@/assets/LOGO-fold.svg'
+// import icon_moments_categories_outlined from '@/assets/svg/icon_moments-categories_outlined.svg'
+// import icon_side_fold_outlined from '@/assets/svg/icon_side-fold_outlined.svg'
+// import icon_side_expand_outlined from '@/assets/svg/icon_side-expand_outlined.svg'
+// import { useRoute, useRouter } from 'vue-router'
+// import { useAppearanceStoreWithOut } from '@/stores/appearance'
 import { useEmitt } from '@/utils/useEmitt'
 import { isMobile } from '@/utils/utils'
 import { onBeforeMount } from 'vue'
@@ -17,17 +17,17 @@ import { onBeforeMount } from 'vue'
 const isPhone = computed(() => {
   return isMobile()
 })
-const router = useRouter()
+// const router = useRouter()
 const collapse = ref(false)
 const collapseCopy = ref(false)
-const appearanceStore = useAppearanceStoreWithOut()
+// const appearanceStore = useAppearanceStoreWithOut()
 let time: any
 onUnmounted(() => {
   clearTimeout(time)
 })
-const loginBg = computed(() => {
-  return appearanceStore.getLogin
-})
+// const loginBg = computed(() => {
+//   return appearanceStore.getLogin
+// })
 const handleCollapseChange = (val: any = true) => {
   collapseCopy.value = val
   clearTimeout(time)
@@ -39,25 +39,25 @@ useEmitt({
   name: 'collapse-change',
   callback: handleCollapseChange,
 })
-const handleFoldExpand = () => {
-  handleCollapseChange(!collapse.value)
-}
+// const handleFoldExpand = () => {
+//   handleCollapseChange(!collapse.value)
+// }
 
-const toWorkspace = () => {
-  router.push('/')
-}
+// const toWorkspace = () => {
+//   router.push('/')
+// }
 
-const toChatIndex = () => {
-  router.push('/chat/index')
-}
+// const toChatIndex = () => {
+//   router.push('/chat/index')
+// }
 
-const toUserIndex = () => {
-  router.push('/system/user')
-}
-const route = useRoute()
-const showSysmenu = computed(() => {
-  return route.path.includes('/system')
-})
+// const toUserIndex = () => {
+//   router.push('/system/user')
+// }
+// const route = useRoute()
+// const showSysmenu = computed(() => {
+//   return route.path.includes('/system')
+// })
 onBeforeMount(() => {
   if (isPhone.value) {
     collapse.value = true
@@ -68,7 +68,7 @@ onBeforeMount(() => {
 
 <template>
   <div class="system-layout">
-    <div class="left-side" :class="collapse && 'left-side-collapse'">
+    <!-- <div class="left-side" :class="collapse && 'left-side-collapse'">
       <template v-if="showSysmenu">
         <div class="sys-management" @click="toUserIndex">
           <img
@@ -224,7 +224,7 @@ onBeforeMount(() => {
           </el-icon>
         </div>
       </div>
-    </div>
+    </div> -->
     <div class="right-main" :class="collapse && 'right-side-collapse'">
       <div class="content">
         <router-view />
@@ -368,7 +368,8 @@ onBeforeMount(() => {
   }
 
   .right-main {
-    width: calc(100% - 240px);
+    // width: calc(100% - 240px);
+    width: 100%;
     padding: 8px 8px 8px 0;
     max-height: 100vh;
 

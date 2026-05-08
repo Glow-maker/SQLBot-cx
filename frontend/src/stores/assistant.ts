@@ -8,7 +8,6 @@ const flagKey = 'sqlbit-assistant-flag'
 type Resolver<T = any> = (value: T | PromiseLike<T>) => void
 type Rejecter = (reason?: any) => void
 interface PendingRequest<T = any> {
-  requestId: string
   resolve: Resolver<T>
   reject: Rejecter
 }
@@ -24,9 +23,7 @@ interface AssistantState {
   history: boolean
   hostOrigin: string
   autoDs?: boolean
-  requestPromiseMap: Map<string, PendingRequest[]>
-  peddingStatus: number //0: ready,1: pedding,2:finish
-  certificateTime: number
+  requestPromiseMap: Map<string, PendingRequest>
 }
 
 export const AssistantStore = defineStore('assistant', {
@@ -43,9 +40,7 @@ export const AssistantStore = defineStore('assistant', {
       history: true,
       hostOrigin: '',
       autoDs: false,
-      requestPromiseMap: new Map<string, PendingRequest[]>(),
-      peddingStatus: 0,
-      certificateTime: 0,
+      requestPromiseMap: new Map<string, PendingRequest>(),
     }
   },
   getters: {
@@ -87,85 +82,45 @@ export const AssistantStore = defineStore('assistant', {
     },
   },
   actions: {
-    refreshCertificate(requestUrl?: string) {
-      /* if (+new Date() < this.certificateTime + 5000) {
-        return
-      } */
-
+    refreshCertificate<T>() {
       const timeout = 30000
-      let peddingList = this.requestPromiseMap.get(this.id) as PendingRequest[]
-      if (!peddingList) {
-        this.requestPromiseMap.set(this.id, [])
-        peddingList = this.requestPromiseMap.get(this.id) as PendingRequest[]
-      }
-
-      if (this.peddingStatus === 2) {
-        if (peddingList?.length) {
-          return
-        } else {
-          this.peddingStatus = 0
-        }
-      }
-
       return new Promise((resolve, reject) => {
-        const currentRequestId = `${this.id}|${requestUrl}|${+new Date()}`
         const timeoutId = setTimeout(() => {
-          console.error(`Request ${currentRequestId}[${requestUrl}] timed out after ${timeout}ms`)
-          resolve(null)
-          removeRequest(currentRequestId, peddingList)
-          if (timeoutId) {
-            clearTimeout(timeoutId)
-          }
-          // reject(new Error(`Request ${this.id} timed out after ${timeout}ms`))
+          this.requestPromiseMap.delete(this.id)
+          reject(new Error(`Request ${this.id} timed out after ${timeout}ms`))
         }, timeout)
-
-        const cleanupAndResolve = (value: any) => {
-          if (timeoutId) {
+        this.requestPromiseMap.set(this.id, {
+          resolve: (value: T) => {
             clearTimeout(timeoutId)
-          }
-          resolve(value)
-          removeRequest(currentRequestId, peddingList)
-        }
-
-        const cleanupAndReject = (reason: any) => {
-          if (timeoutId) {
+            this.requestPromiseMap.delete(this.id)
+            resolve(value)
+          },
+          reject: (reason) => {
             clearTimeout(timeoutId)
-          }
-          removeRequest(currentRequestId, peddingList)
-          reject(reason)
+            this.requestPromiseMap.delete(this.id)
+            reject(reason)
+          },
+        })
+        const readyData = {
+          eventName: this.pageEmbedded ? 'sqlbot_embedded_event' : 'sqlbot_assistant_event',
+          busi: 'ready',
+          ready: true,
+          messageId: this.id,
         }
-
-        addRequest(currentRequestId, cleanupAndResolve, cleanupAndReject, peddingList)
-        if (this.peddingStatus !== 1) {
-          this.peddingStatus = 1
-          const readyData = {
-            eventName: this.pageEmbedded ? 'sqlbot_embedded_event' : 'sqlbot_assistant_event',
-            busi: 'ready',
-            ready: true,
-            messageId: this.id,
-          }
-          window.parent.postMessage(readyData, '*')
-        }
+        window.parent.postMessage(readyData, '*')
       })
     },
     resolveCertificate(data?: any) {
-      const peddingRequestList = this.requestPromiseMap.get(this.id)
-
-      if (peddingRequestList?.length) {
-        let len = peddingRequestList?.length
-        while (len--) {
-          const peddingRequest: PendingRequest = peddingRequestList[len]
-          peddingRequest.resolve(data)
-        }
+      const peddingRequest = this.requestPromiseMap.get(this.id)
+      if (peddingRequest) {
+        peddingRequest.resolve(data)
       }
-      this.peddingStatus = 2
     },
     setId(id: string) {
       this.id = id
     },
     setCertificate(certificate: string) {
       this.certificate = certificate
-      this.certificateTime = +new Date()
     },
     setType(type: number) {
       this.type = type
@@ -213,35 +168,6 @@ export const AssistantStore = defineStore('assistant', {
     },
   },
 })
-
-const removeRequest = (requestId: string, peddingList: PendingRequest[]) => {
-  if (!peddingList) return
-  let len = peddingList.length
-  while (len--) {
-    const peddingRequest = peddingList[len]
-    if (peddingRequest?.requestId === requestId) {
-      peddingList.splice(len, 1)
-    }
-  }
-}
-
-const addRequest = (
-  requestId: string,
-  resolve: any,
-  reject: any,
-  peddingList: PendingRequest[]
-) => {
-  const currentPeddingRequest = {
-    requestId,
-    resolve: (value: any) => {
-      resolve(value)
-    },
-    reject: (reason: any) => {
-      reject(reason)
-    },
-  } as PendingRequest
-  peddingList?.push(currentPeddingRequest)
-}
 
 export const useAssistantStore = () => {
   return AssistantStore(store)

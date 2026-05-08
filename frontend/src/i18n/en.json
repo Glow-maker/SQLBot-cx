@@ -7,45 +7,6 @@
     "AI Model Configuration": "AI Model Config",
     "Details": "Details"
   },
-  "variables": {
-    "built_in": "Built-in",
-    "normal_value": "Normal value",
-    "​​cannot_be_empty": "Variable values ​​cannot be empty.",
-    "1_to_100": "{name}, the numerical range is {min} to {max}.",
-    "1_to_100_de": "{name}, the date range is {min} to {max}.",
-    "system_variables": "System Variables",
-    "variables": "Variables",
-    "system": "System",
-    "search_variables": "Search Variables",
-    "add_variable": "Add Variable",
-    "variable_name": "Variable Name",
-    "variable_type": "Variable Type",
-    "variable_value": "Variable Value",
-    "edit_variable": "Edit Variable",
-    "no_variables_yet": "No Variables Yet",
-    "please_enter_value": "Please Enter Value",
-    "date": "Date",
-    "start_date": "Start Date",
-    "end_date": "End Date",
-    "enter_variable_name": "Please Enter Variable Name",
-    "enter_variable_value": "Please Enter Variable Value"
-  },
-  "sync": {
-    "integration": "Platform integration needs to be enabled.",
-    "the_existing_user": "If the user already exists, overwrite the existing user.",
-    "sync_users": "Sync Users",
-    "sync_wechat_users": "Sync WeChat Users",
-    "sync_dingtalk_users": "Sync DingTalk Users",
-    "sync_lark_users": "Sync Lark Users",
-    "sync_complete": "Sync Complete",
-    "synced_10_users": "Successfully synced {num} users",
-    "failed_3_users": "Successfully synced {success} users, sync failed {failed} users",
-    "download_failure_list": "Download Failure List",
-    "sync_failed": "Sync Failed",
-    "failed_10_users": "Sync failed {num} users",
-    "continue_syncing": "Continue Syncing",
-    "return_to_view": "Return to View"
-  },
   "parameter": {
     "execution_details": "Execution Details",
     "overview": "Overview",
@@ -196,8 +157,7 @@
     "password_reset_successful": "Password reset successful",
     "or": "Or",
     "refresh": "Refresh",
-    "input_limit": "Length cannot exceed {0} characters",
-    "file_size_limit_error": "File size exceeds the limit (maximum {limit})"
+    "input_limit": "Length cannot exceed {0} characters"
   },
   "dashboard": {
     "open_dashboard": "Open Dashboard",
@@ -388,8 +348,7 @@
         "failed": "Connect failed"
       },
       "timeout": "Timeout(second)",
-      "address": "Address",
-      "low_version": "Compatible with lower versions"
+      "address": "Address"
     },
     "sync_fields": "Sync Fields"
   },
@@ -728,8 +687,6 @@
       "line": "Line",
       "pie": "Pie"
     },
-    "hide_label": "Hide Label",
-    "show_label": "Show Label",
     "sort_asc": "Ascending",
     "sort_desc": "Descending",
     "sort_none": "No Sort",
@@ -767,16 +724,7 @@
       "FILTER_CUSTOM_PROMPT": "Match Custom Prompts",
       "EXECUTE_SQL": "Execute SQL",
       "GENERATE_PICTURE": "Generate Picture"
-    },
-    "log_system": "Conversation Template",
-    "log_question": "Current Question",
-    "log_answer": "AI Response",
-    "log_history": "History",
-    "find_term_title": "Matched {0} terms",
-    "find_sql_sample_title": "Matched {0} SQL examples",
-    "find_custom_prompt_title": "Matched {0} custom prompts",
-    "query_count_title": "Found {0} data entries",
-    "generate_picture_success": "Image generated"
+    }
   },
   "about": {
     "title": "About",
@@ -897,8 +845,7 @@
     "redirect_2_auth": "Redirecting to {0} authentication, {1} seconds...",
     "redirect_immediately": "Redirecting immediately",
     "permission_invalid": "Authentication invalid [Current account has insufficient permissions]",
-    "scan_qr_login": " Scan QR Code",
-    "no_auth_error": "Not authenticated. Redirecting to login page in {0} seconds..."
+    "scan_qr_login": " Scan QR Code"
   },
   "supplier": {
     "alibaba_cloud_bailian": "Alibaba Cloud Bailian",

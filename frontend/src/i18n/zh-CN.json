@@ -7,45 +7,6 @@
     "AI Model Configuration": "模型配置",
     "Details": "详情"
   },
-  "sync": {
-    "integration": "需开启平台对接",
-    "the_existing_user": "若用户已存在，覆盖旧用户",
-    "sync_users": "同步用户",
-    "sync_wechat_users": "同步企业微信用户",
-    "sync_dingtalk_users": "同步钉钉用户",
-    "sync_lark_users": "同步飞书用户",
-    "sync_complete": "同步完成",
-    "synced_10_users": "成功同步 {num} 个用户",
-    "failed_3_users": "成功同步 {success} 个用户，同步失败 {failed} 个用户，",
-    "download_failure_list": "下载失败列表",
-    "sync_failed": "同步失败",
-    "failed_10_users": "同步失败 {num} 个用户，",
-    "continue_syncing": "继续同步",
-    "return_to_view": "返回查看"
-  },
-  "variables": {
-    "built_in": "已内置",
-    "normal_value": "常规值",
-    "​​cannot_be_empty": "变量值不能为空",
-    "1_to_100": "{name}数值范围 {min}～{max}",
-    "1_to_100_de": "{name}日期范围 {min}～{max}",
-    "system_variables": "系统变量",
-    "variables": "变量",
-    "system": "系统",
-    "search_variables": "搜索变量",
-    "add_variable": "添加变量",
-    "variable_name": "变量名称",
-    "variable_type": "变量类型",
-    "variable_value": "变量值",
-    "edit_variable": "编辑变量",
-    "no_variables_yet": "暂无变量",
-    "please_enter_value": "请输入数值",
-    "date": "日期",
-    "start_date": "开始日期",
-    "end_date": "结束日期",
-    "enter_variable_name": "请输入变量名称",
-    "enter_variable_value": "请输入变量值"
-  },
   "parameter": {
     "execution_details": "执行详情",
     "overview": "概览",
@@ -196,8 +157,7 @@
     "password_reset_successful": "重置密码成功",
     "or": "或者",
     "refresh": "刷新",
-    "input_limit": "长度在 {0} 到 {1} 个字符",
-    "file_size_limit_error": "文件大小超出限制（最大{limit}）"
+    "input_limit": "长度在 {0} 到 {1} 个字符"
   },
   "dashboard": {
     "open_dashboard": "打开仪表板",
@@ -388,8 +348,7 @@
         "failed": "连接失败"
       },
       "timeout": "查询超时(秒)",
-      "address": "地址",
-      "low_version": "兼容低版本"
+      "address": "地址"
     },
     "sync_fields": "同步表结构"
   },
@@ -728,8 +687,6 @@
       "line": "折线图",
       "pie": "饼图"
     },
-    "hide_label": "隐藏标签",
-    "show_label": "显示标签",
     "sort_asc": "升序",
     "sort_desc": "降序",
     "sort_none": "不排序",
@@ -767,16 +724,7 @@
       "FILTER_CUSTOM_PROMPT": "匹配自定义提示词",
       "EXECUTE_SQL": "执行 SQL",
       "GENERATE_PICTURE": "生成图片"
-    },
-    "log_system": "对话模板",
-    "log_question": "本次提问",
-    "log_answer": "AI 回答",
-    "log_history": "历史记录",
-    "find_term_title":"匹配到 {0} 个术语",
-    "find_sql_sample_title":"匹配到 {0} 个SQL示例",
-    "find_custom_prompt_title":"匹配到 {0} 个自定义提示词",
-    "query_count_title":"查询到 {0} 条数据",
-    "generate_picture_success":"已生成图片"
+    }
   },
   "about": {
     "title": "关于",
@@ -897,8 +845,7 @@
     "redirect_2_auth": "正在跳转至 {0} 认证，{1} 秒...",
     "redirect_immediately": "立即跳转",
     "permission_invalid": "认证无效【当前账号权限不够】",
-    "scan_qr_login": "扫码登录",
-    "no_auth_error": "未认证，即将跳转登录页面，{0} 秒..."
+    "scan_qr_login": "扫码登录"
   },
   "supplier": {
     "alibaba_cloud_bailian": "阿里云百炼",

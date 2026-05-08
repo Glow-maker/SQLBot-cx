@@ -71,8 +71,6 @@ const add = (type: any, child: any, logic: any) => {
           term: '',
           filter_type: 'logic',
           name: '',
-          value_type: 'normal',
-          variable_id: undefined,
         }
       : { child: [], logic }
   )

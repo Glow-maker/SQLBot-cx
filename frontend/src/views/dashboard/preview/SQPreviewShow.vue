@@ -12,8 +12,7 @@ import { dashboardStoreWithOut } from '@/stores/dashboard/dashboard.ts'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 const dashboardStore = dashboardStoreWithOut()
-const previewCanvasContainer = ref(null)
-const dashboardPreview = ref(null)
+
 const slideShow = ref(true)
 const dataInitState = ref(true)
 const state = reactive({

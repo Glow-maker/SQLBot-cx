@@ -47,10 +47,6 @@ const emits = defineEmits([
 const assistantStore = useAssistantStore()
 const isCompletePage = computed(() => !assistantStore.getAssistant || assistantStore.getEmbedded)
 
-const selectAssistantDs = computed(() => {
-  return assistantStore.getAssistant && !assistantStore.getAutoDs
-})
-
 const search = ref<string>()
 
 const _currentChatId = computed({
@@ -151,7 +147,7 @@ const createNewChat = async () => {
 }
 
 async function doCreateNewChat() {
-  if (!isCompletePage.value && !selectAssistantDs.value) {
+  if (!isCompletePage.value) {
     return
   }
   chatCreatorRef.value?.showDs()
@@ -259,11 +255,7 @@ function onChatRenamed(chat: Chat) {
       />
     </el-main>
 
-    <ChatCreator
-      v-if="isCompletePage || selectAssistantDs"
-      ref="chatCreatorRef"
-      @on-chat-created="onChatCreated"
-    />
+    <ChatCreator v-if="isCompletePage" ref="chatCreatorRef" @on-chat-created="onChatCreated" />
   </el-container>
 </template>
 

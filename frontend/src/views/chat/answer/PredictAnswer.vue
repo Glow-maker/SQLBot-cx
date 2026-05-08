@@ -202,8 +202,6 @@ const sendMessage = async () => {
   }
 }
 
-const chartBlockRef = ref()
-
 const loadingData = ref(false)
 
 function getChatPredictData(recordId?: number) {

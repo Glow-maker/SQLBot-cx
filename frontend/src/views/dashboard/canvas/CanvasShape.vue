@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { type CanvasItem } from '@/utils/canvas.ts'
-import { ref, toRefs, type PropType, computed } from 'vue'
+import { toRefs, type PropType, computed } from 'vue'
 import ResizeHandle from '@/views/dashboard/canvas/ResizeHandle.vue'
 import DragHandle from '@/views/dashboard/canvas/DragHandle.vue'
 import ComponentBar from '@/views/dashboard/canvas/ComponentBar.vue'
 const emits = defineEmits(['enlargeView'])
-const shapeRef = ref(null)
+
 // Props
 const props = defineProps({
   configItem: {

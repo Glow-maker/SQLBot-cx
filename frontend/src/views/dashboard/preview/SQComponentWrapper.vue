@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, toRefs, computed } from 'vue'
 import { findComponent } from '@/views/dashboard/components/component-list.ts'
-
-const componentWrapperInnerRef = ref(null)
+// @ts-ignore
+const componentWrapperInnerRef = ref<HTMLElement | null>(null)
+// @ts-ignore
+const component = ref<HTMLElement | null>(null)
 
 const props = defineProps({
   active: {
@@ -28,7 +30,7 @@ const props = defineProps({
   },
 })
 const { configItem, showPosition } = toRefs(props)
-const component = ref(null)
+
 const wrapperId = 'wrapper-outer-id-' + configItem.value.id
 const viewDemoInnerId = computed(() => 'enlarge-inner-content-' + configItem.value.id)
 </script>
