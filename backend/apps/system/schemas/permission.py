@@ -4,6 +4,7 @@ from inspect import signature
 from typing import Optional
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
+import json
 import re
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlmodel import Session, select
@@ -44,6 +45,21 @@ async def check_ws_permission(oid, type, resource) -> bool:
     if isinstance(resource, list):
         return set(resource).issubset(set(resource_id_list))
     return resource in resource_id_list
+
+
+def is_platform_virtual_assistant(request: Request) -> bool:
+    assistant = getattr(request.state, 'assistant', None)
+    if not assistant:
+        return False
+    configuration = getattr(assistant, 'configuration', None)
+    if isinstance(configuration, str):
+        try:
+            configuration = json.loads(configuration)
+        except Exception:
+            return False
+    if isinstance(configuration, dict):
+        return bool(configuration.get('platform_virtual'))
+    return False
         
  
 def require_permissions(permission: SqlbotPermission):
@@ -76,6 +92,12 @@ def require_permissions(permission: SqlbotPermission):
                     #raise Exception('no permission to execute, only for workspace admin')
                     raise Exception(trans('i18n_permission.only_ws_admin'))
             if not resource_type:
+                return await func(*args, **kwargs)
+            if (
+                resource_type in ('ds', 'datasource')
+                and keyExpression == "create_chat_obj.datasource"
+                and is_platform_virtual_assistant(request)
+            ):
                 return await func(*args, **kwargs)
             if keyExpression:
                 sig = signature(func)

@@ -187,6 +187,11 @@ const sendMessage = async () => {
                 currentRecord.error = data.content
                 emits('error', currentRecord.id)
                 break
+              case 'permission_denied':
+                currentRecord.error = JSON.stringify(data)
+                emits('error', currentRecord.id)
+                _loading.value = false
+                return
               case 'sql-result':
                 sql_answer += data.reasoning_content
                 _currentChat.value.records[index.value].sql_answer = sql_answer

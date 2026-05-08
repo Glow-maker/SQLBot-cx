@@ -14,7 +14,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_
 
-from apps.db.db import get_schema
+from apps.db.db import get_schema, check_connection
 from apps.db.engine import get_engine_conn
 from apps.swagger.i18n import PLACEHOLDER_PREFIX
 from apps.system.crud.assistant import AssistantOutDsFactory
@@ -87,9 +87,14 @@ async def check(session: SessionDep, trans: Trans, ds: CoreDatasource):
 
 
 @router.get("/check/{ds_id}", response_model=bool, summary=f"{PLACEHOLDER_PREFIX}ds_check")
-async def check_by_id(session: SessionDep, trans: Trans,
+async def check_by_id(request: Request, session: SessionDep, trans: Trans,
                       ds_id: int = Path(..., description=f"{PLACEHOLDER_PREFIX}ds_id")):
     def inner():
+        virtual_assistant = getattr(request.state, "assistant", None)
+        if virtual_assistant and virtual_assistant.type in (1, 3):
+            out_ds = AssistantOutDsFactory.get_instance(virtual_assistant)
+            ds = out_ds.get_ds(ds_id, trans)
+            return check_connection(trans, ds, True)
         return check_status_by_id(session, trans, ds_id, True)
 
     return await asyncio.to_thread(inner)

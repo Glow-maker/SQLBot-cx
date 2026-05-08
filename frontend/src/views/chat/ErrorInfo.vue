@@ -9,6 +9,25 @@ const props = defineProps<{
 
 const { t } = useI18n()
 
+interface PermissionDeniedTable {
+  name?: string
+  displayName?: string
+  catalogPath?: string
+  reason?: string
+  applyUrl?: string
+}
+
+interface ParsedErrorMessage {
+  message?: string
+  showMore: boolean
+  traceback?: string
+  type?: string
+  gate?: string
+  reason?: string
+  datasourceId?: string | number
+  deniedTables?: PermissionDeniedTable[]
+}
+
 const assistantStore = useAssistantStore()
 const isCompletePage = computed(() => !assistantStore.getAssistant || assistantStore.getEmbedded)
 
@@ -16,15 +35,23 @@ const showBlock = computed(() => {
   return props.error && props.error?.trim().length > 0
 })
 
-const errorMessage = computed(() => {
-  const obj = { message: props.error, showMore: false, traceback: '', type: undefined }
+const errorMessage = computed<ParsedErrorMessage>(() => {
+  const obj: ParsedErrorMessage = {
+    message: props.error,
+    showMore: false,
+    traceback: '',
+  }
   if (showBlock.value && props.error?.trim().startsWith('{') && props.error?.trim().endsWith('}')) {
     try {
       const json = JSON.parse(props.error?.trim())
-      obj.message = json['message']
+      obj.message = json['message'] ?? json['content'] ?? props.error
       obj.traceback = json['traceback']
       obj.type = json['type']
-      if (obj.traceback?.trim().length > 0) {
+      obj.gate = json['gate']
+      obj.reason = json['reason']
+      obj.datasourceId = json['datasourceId']
+      obj.deniedTables = Array.isArray(json['deniedTables']) ? json['deniedTables'] : []
+      if ((obj.traceback?.trim().length ?? 0) > 0) {
         obj.showMore = true
       }
     } catch (e) {
@@ -36,6 +63,19 @@ const errorMessage = computed(() => {
 
 const show = ref(false)
 
+const permissionDeniedTables = computed(() => errorMessage.value.deniedTables ?? [])
+
+function getTableDisplayName(table: PermissionDeniedTable) {
+  return table.displayName || table.catalogPath || table.name || '未知表'
+}
+
+function openApplyUrl(table: PermissionDeniedTable) {
+  if (!table.applyUrl) {
+    return
+  }
+  window.open(table.applyUrl, '_blank')
+}
+
 function showTraceBack() {
   show.value = true
 }
@@ -44,7 +84,37 @@ function showTraceBack() {
 <template>
   <div v-if="showBlock">
     <div
-      v-if="!errorMessage.showMore && errorMessage.type == undefined"
+      v-if="errorMessage.type === 'permission_denied'"
+      class="error-container permission-denied"
+    >
+      <div class="permission-title">当前账号暂无相关表查询权限</div>
+      <div class="permission-desc">申请权限通过后，再重新发起问数。</div>
+      <div v-if="permissionDeniedTables.length > 0" class="permission-table-list">
+        <div
+          v-for="table in permissionDeniedTables"
+          :key="`${table.name || ''}-${table.applyUrl || ''}`"
+          class="permission-table-item"
+        >
+          <div class="permission-table-info">
+            <div class="permission-table-name">{{ getTableDisplayName(table) }}</div>
+            <div class="permission-table-meta">
+              <span v-if="table.name && table.name !== getTableDisplayName(table)">
+                {{ table.name }}
+              </span>
+              <span v-if="table.reason">{{ table.reason }}</span>
+            </div>
+          </div>
+          <el-button v-if="table.applyUrl" size="small" type="primary" @click="openApplyUrl(table)">
+            申请权限
+          </el-button>
+        </div>
+      </div>
+      <div v-else class="permission-table-empty">
+        权限服务未返回具体无权表，请联系数据管理员确认权限范围。
+      </div>
+    </div>
+    <div
+      v-else-if="!errorMessage.showMore && errorMessage.type == undefined"
       v-dompurify-html="errorMessage.message"
       class="error-container"
     ></div>
@@ -100,5 +170,70 @@ function showTraceBack() {
     font-size: 14px;
     line-height: 20px;
   }
+}
+
+.permission-denied {
+  border: 1px solid #f2c5c5;
+  background: #fff7f7;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.permission-title {
+  font-weight: 600;
+  color: #b42318;
+}
+
+.permission-desc {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 20px;
+  color: #5f6368;
+}
+
+.permission-table-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission-table-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #f0dada;
+  border-radius: 6px;
+}
+
+.permission-table-info {
+  min-width: 0;
+}
+
+.permission-table-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: #1f2329;
+  overflow-wrap: anywhere;
+}
+
+.permission-table-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #646a73;
+}
+
+.permission-table-empty {
+  margin-top: 8px;
+  font-size: 14px;
+  color: #646a73;
 }
 </style>
