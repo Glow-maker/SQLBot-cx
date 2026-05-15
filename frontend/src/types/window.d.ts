@@ -6,5 +6,9 @@ export declare global {
     __INJECTED_LOGIN_STATE__?: {
       token: string
     }
+    __SQLBOT_QIANKUN_PROPS__?: {
+      sendToMain?: (type: string, data?: any) => void
+      sendMessage?: (type: string, data?: any, to?: string) => void
+    }
   }
 }

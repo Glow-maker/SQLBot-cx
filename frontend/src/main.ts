@@ -17,6 +17,7 @@ let app = null as any
 
 function render(props = {} as any) {
   const { container, loginState } = props
+  window.__SQLBOT_QIANKUN_PROPS__ = props
   // 处理从基座传递的登录态
   if (loginState && loginState.token) {
     // 将登录态存储到全局对象中，供 request.ts 使用
@@ -56,6 +57,10 @@ renderWithQiankun({
   },
   update(props: any) {
     console.log('[vue] app update', props)
+    window.__SQLBOT_QIANKUN_PROPS__ = {
+      ...(window.__SQLBOT_QIANKUN_PROPS__ || {}),
+      ...props,
+    }
     // 当基座登录态更新时，同步更新子应用的登录态
     if (props.loginState && props.loginState.token) {
       // 更新全局对象中的登录态
@@ -69,6 +74,7 @@ renderWithQiankun({
       app.unmount()
       app = null
     }
+    delete window.__SQLBOT_QIANKUN_PROPS__
   },
 })
 // export async function bootstrap() {

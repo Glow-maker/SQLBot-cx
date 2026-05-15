@@ -15,6 +15,9 @@ interface PermissionDeniedTable {
   catalogPath?: string
   reason?: string
   applyUrl?: string
+  tableId?: string | number
+  categoryId?: string | number
+  categoryName?: string
 }
 
 interface ParsedErrorMessage {
@@ -69,7 +72,44 @@ function getTableDisplayName(table: PermissionDeniedTable) {
   return table.displayName || table.catalogPath || table.name || '未知表'
 }
 
+function getPermissionApplyPayload(table: PermissionDeniedTable) {
+  return {
+    authScope: 'category',
+    resourceIds: table.categoryId ? [table.categoryId] : [],
+    tableId: table.tableId,
+    tableName: table.name,
+    categoryId: table.categoryId,
+    categoryName: table.categoryName || table.displayName || table.catalogPath,
+    applyUrl: table.applyUrl,
+  }
+}
+
+function requestPermissionApply(table: PermissionDeniedTable) {
+  if (!table.categoryId) {
+    return false
+  }
+  const payload = getPermissionApplyPayload(table)
+  const qiankunProps = window.__SQLBOT_QIANKUN_PROPS__
+
+  if (typeof qiankunProps?.sendToMain === 'function') {
+    qiankunProps.sendToMain('applyPermission', payload)
+    return true
+  }
+  window.dispatchEvent(
+    new CustomEvent('sqlbot-message', {
+      detail: {
+        type: 'applyPermission',
+        data: payload,
+      },
+    })
+  )
+  return !!window.__POWERED_BY_QIANKUN__
+}
+
 function openApplyUrl(table: PermissionDeniedTable) {
+  if (requestPermissionApply(table)) {
+    return
+  }
   if (!table.applyUrl) {
     return
   }
