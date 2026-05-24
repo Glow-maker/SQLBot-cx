@@ -175,10 +175,13 @@ class Handler(BaseHTTPRequestHandler):
                     "name": t,
                     "displayName": f"{t} 表",
                     "catalogPath": f"sales/{t}",
+                    "tableId": 1000 + idx,
+                    "categoryId": 2000 + idx,
+                    "categoryName": f"{t} 目录",
                     "reason": "no permission",
-                    "applyUrl": f"http://platform.local/apply?table={t}",
+                    "applyUrl": f"http://platform.local/dataresource/l4detail?id={2000 + idx}&from=sqlbot",
                 }
-                for t in tables_in
+                for idx, t in enumerate(tables_in, start=1)
                 if t in deny_set
             ]
             allowed_flag = len(denied) == 0

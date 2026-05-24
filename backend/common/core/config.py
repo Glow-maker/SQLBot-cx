@@ -94,6 +94,8 @@ class Settings(BaseSettings):
     PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
     # AssistantOutDs 远程拉取结果的本地 TTL 缓存秒数，避免打爆中台
     PLATFORM_DATASOURCE_CACHE_TTL_SECONDS: int = 60
+    # 统一逻辑数据源：前端不选 ds，SQLBot 从中台全量表目录路由到单个真实 ds 执行
+    PLATFORM_LOGICAL_DATASOURCE_ENABLED: bool = False
 
     # === 表级权限校验（主线二 Phase 3 启用，fail-closed）===
     PLATFORM_PERMISSION_CHECK_PATH: str = "/openapi/sqlbot/table-permissions/check"
@@ -174,6 +176,7 @@ class Settings(BaseSettings):
                      'PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER',
                      'PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN',
                      'PLATFORM_DATASOURCE_ENABLED',
+                     'PLATFORM_LOGICAL_DATASOURCE_ENABLED',
                      mode='before')
     @classmethod
     def lowercase_bool(cls, v: Any) -> Any:

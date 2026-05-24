@@ -376,11 +376,16 @@
         </el-scrollbar>
       </el-main>
       <el-footer
-        v-if="computedMessages.length > 0 || (!isCompletePage && !selectAssistantDs) || isInQiankun"
+        v-if="
+          computedMessages.length > 0 ||
+          (!isCompletePage && !selectAssistantDs) ||
+          logicalDatasourceEnabled ||
+          isInQiankun
+        "
         class="chat-footer"
       >
         <div class="input-wrapper" @click="clickInput">
-          <div v-if="isCompletePage || selectAssistantDs" class="datasource">
+          <div v-if="(isCompletePage || selectAssistantDs) && !logicalDatasourceEnabled" class="datasource">
             <template v-if="currentChat.datasource && currentChat.datasource_name">
               {{ t('qa.selected_datasource') }}:
               <img
@@ -483,6 +488,7 @@ import { isMobile } from '@/utils/utils'
 import router from '@/router'
 import QuickQuestion from '@/views/chat/QuickQuestion.vue'
 import { useChatConfigStore } from '@/stores/chatConfig.ts'
+import { isPlatformLogicalDatasourceEnabled } from '@/utils/platform'
 const userStore = useUserStore()
 const props = defineProps<{
   startChatDsId?: number
@@ -512,6 +518,7 @@ const embeddedHistoryHidden = computed(
 const selectAssistantDs = computed(() => {
   return assistantStore.getAssistant && !assistantStore.getAutoDs
 })
+const logicalDatasourceEnabled = computed(() => isPlatformLogicalDatasourceEnabled())
 const customName = computed(() => {
   if (!isCompletePage.value && props.pageEmbedded) return props.appName
   return ''
@@ -668,6 +675,11 @@ const createNewChat = async () => {
     return
   }
   goEmpty()
+  if (logicalDatasourceEnabled.value) {
+    currentChat.value = new ChatInfo()
+    currentChatId.value = undefined
+    return
+  }
   if (!isCompletePage.value && !selectAssistantDs.value) {
     currentChat.value = new ChatInfo()
     currentChatId.value = undefined
@@ -797,6 +809,13 @@ function onChatStop() {
 }
 const assistantPrepareSend = async () => {
   if (
+    logicalDatasourceEnabled.value &&
+    (currentChatId.value == null || typeof currentChatId.value == 'undefined')
+  ) {
+    await hiddenChatCreatorRef.value?.createChat()
+    return
+  }
+  if (
     !isCompletePage.value &&
     !selectAssistantDs.value &&
     (currentChatId.value == null || typeof currentChatId.value == 'undefined')
@@ -825,6 +844,11 @@ const sendMessage = async (
     }, 300)
   }
   await assistantPrepareSend()
+  if (currentChatId.value == null || typeof currentChatId.value == 'undefined') {
+    loading.value = false
+    isTyping.value = false
+    return
+  }
   const currentRecord = new ChatRecord()
   currentRecord.create_time = new Date()
   currentRecord.chat_id = currentChatId.value

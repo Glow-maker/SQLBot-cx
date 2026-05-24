@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus-secondary'
+import { qiankunWindow } from 'vite-plugin-qiankun/es/helper'
 import { useAssistantStore } from '@/stores/assistant.ts'
 
 const props = defineProps<{
@@ -13,8 +15,17 @@ interface PermissionDeniedTable {
   name?: string
   displayName?: string
   catalogPath?: string
+  tableId?: number | string
+  categoryId?: number | string
+  categoryName?: string
   reason?: string
   applyUrl?: string
+}
+
+interface CrossSourceTable {
+  name?: string
+  datasourceId?: string | number
+  datasourceName?: string
 }
 
 interface ParsedErrorMessage {
@@ -26,6 +37,7 @@ interface ParsedErrorMessage {
   reason?: string
   datasourceId?: string | number
   deniedTables?: PermissionDeniedTable[]
+  tables?: CrossSourceTable[]
 }
 
 const assistantStore = useAssistantStore()
@@ -51,6 +63,7 @@ const errorMessage = computed<ParsedErrorMessage>(() => {
       obj.reason = json['reason']
       obj.datasourceId = json['datasourceId']
       obj.deniedTables = Array.isArray(json['deniedTables']) ? json['deniedTables'] : []
+      obj.tables = Array.isArray(json['tables']) ? json['tables'] : []
       if ((obj.traceback?.trim().length ?? 0) > 0) {
         obj.showMore = true
       }
@@ -64,16 +77,45 @@ const errorMessage = computed<ParsedErrorMessage>(() => {
 const show = ref(false)
 
 const permissionDeniedTables = computed(() => errorMessage.value.deniedTables ?? [])
+const crossSourceTables = computed(() => errorMessage.value.tables ?? [])
 
 function getTableDisplayName(table: PermissionDeniedTable) {
   return table.displayName || table.catalogPath || table.name || '未知表'
 }
 
+function hasApplyResource(value?: number | string) {
+  return value !== undefined && value !== null && value !== ''
+}
+
+function canApplyPermission(table: PermissionDeniedTable) {
+  return hasApplyResource(table.categoryId) || !!table.applyUrl
+}
+
 function openApplyUrl(table: PermissionDeniedTable) {
-  if (!table.applyUrl) {
+  if (qiankunWindow.__POWERED_BY_QIANKUN__ && hasApplyResource(table.categoryId)) {
+    window.dispatchEvent(
+      new CustomEvent('sqlbot-message', {
+        detail: {
+          type: 'applyPermission',
+          data: {
+            authScope: 'category',
+            resourceIds: [table.categoryId],
+            tableId: table.tableId,
+            tableName: table.name,
+            categoryName: table.categoryName || table.displayName,
+          },
+        },
+      })
+    )
     return
   }
-  window.open(table.applyUrl, '_blank')
+
+  if (table.applyUrl) {
+    window.open(table.applyUrl, '_blank')
+    return
+  }
+
+  ElMessage.warning('未获取到可申请资源')
 }
 
 function showTraceBack() {
@@ -104,13 +146,34 @@ function showTraceBack() {
               <span v-if="table.reason">{{ table.reason }}</span>
             </div>
           </div>
-          <el-button v-if="table.applyUrl" size="small" type="primary" @click="openApplyUrl(table)">
+          <el-button v-if="canApplyPermission(table)" size="small" type="primary" @click="openApplyUrl(table)">
             申请权限
           </el-button>
         </div>
       </div>
       <div v-else class="permission-table-empty">
         权限服务未返回具体无权表，请联系数据管理员确认权限范围。
+      </div>
+    </div>
+    <div
+      v-else-if="errorMessage.type === 'cross_source_not_supported'"
+      class="error-container cross-source"
+    >
+      <div class="cross-source-title">当前问题涉及多个数据源</div>
+      <div class="cross-source-desc">
+        暂不支持跨数据源联合查询。请拆分问题后分别问数，或联系数据管理员建设统一视图。
+      </div>
+      <div v-if="crossSourceTables.length > 0" class="cross-source-table-list">
+        <div
+          v-for="table in crossSourceTables"
+          :key="`${table.datasourceId || ''}-${table.name || ''}`"
+          class="cross-source-table-item"
+        >
+          <span class="cross-source-table-name">{{ table.name || '未知表' }}</span>
+          <span class="cross-source-ds">
+            {{ table.datasourceName || table.datasourceId || '未知数据源' }}
+          </span>
+        </div>
       </div>
     </div>
     <div
@@ -234,6 +297,59 @@ function showTraceBack() {
 .permission-table-empty {
   margin-top: 8px;
   font-size: 14px;
+  color: #646a73;
+}
+
+.cross-source {
+  border: 1px solid #f1d29a;
+  background: #fff9ed;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.cross-source-title {
+  font-weight: 600;
+  color: #9a5b00;
+}
+
+.cross-source-desc {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 20px;
+  color: #5f6368;
+}
+
+.cross-source-table-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cross-source-table-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #f2dfb8;
+  border-radius: 6px;
+}
+
+.cross-source-table-name,
+.cross-source-ds {
+  overflow-wrap: anywhere;
+}
+
+.cross-source-table-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2329;
+}
+
+.cross-source-ds {
+  flex-shrink: 0;
+  font-size: 12px;
   color: #646a73;
 }
 </style>

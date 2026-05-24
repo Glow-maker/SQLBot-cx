@@ -12,7 +12,7 @@
 返回结构与需求文档对齐：
 {
   "allowed": bool,
-  "deniedTables": [{"name", "displayName", "catalogPath", "reason", "applyUrl"}],
+  "deniedTables": [{"name", "displayName", "catalogPath", "tableId", "categoryId", "categoryName", "reason", "applyUrl"}],
   "allowedTables": [{"name", "displayName", "catalogPath"}],
   "datasourceId": str
 }
@@ -34,6 +34,9 @@ class DeniedTable:
     name: str
     display_name: Optional[str] = None
     catalog_path: Optional[str] = None
+    table_id: Optional[int | str] = None
+    category_id: Optional[int | str] = None
+    category_name: Optional[str] = None
     reason: Optional[str] = None
     apply_url: Optional[str] = None
 
@@ -149,6 +152,9 @@ def check_table_permissions(
             name=str(item.get("name", "")),
             display_name=item.get("displayName"),
             catalog_path=item.get("catalogPath"),
+            table_id=item.get("tableId"),
+            category_id=item.get("categoryId"),
+            category_name=item.get("categoryName"),
             reason=item.get("reason"),
             apply_url=item.get("applyUrl"),
         )
@@ -178,6 +184,9 @@ def denied_tables_to_sse_payload(result: PermissionCheckResult, gate_label: str)
                 "name": t.name,
                 "displayName": t.display_name,
                 "catalogPath": t.catalog_path,
+                "tableId": t.table_id,
+                "categoryId": t.category_id,
+                "categoryName": t.category_name,
                 "reason": t.reason,
                 "applyUrl": t.apply_url,
             }

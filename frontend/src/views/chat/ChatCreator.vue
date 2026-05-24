@@ -96,17 +96,18 @@ function confirmSelectDs() {
   }
 }
 
-function createChat(datasource: number) {
+function createChat(datasource?: number) {
   loading.value = true
-  const param = {
-    datasource: datasource,
-  } as any
+  const param = {} as any
+  if (datasource !== undefined && datasource !== null) {
+    param.datasource = datasource
+  }
   let method = chatApi.startChat
   if (assistantStore.getAssistant) {
     param['origin'] = 2
     method = chatApi.startAssistantChat
   }
-  method(param)
+  return method(param)
     .then((res) => {
       const chat: ChatInfo | undefined = chatApi.toChatInfo(res)
       if (chat == undefined) {
@@ -114,9 +115,11 @@ function createChat(datasource: number) {
       }
       emits('onChatCreated', chat)
       hideDs()
+      return chat
     })
     .catch((e) => {
       console.error(e)
+      return undefined
     })
     .finally(() => {
       loading.value = false

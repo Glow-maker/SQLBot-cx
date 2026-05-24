@@ -240,11 +240,13 @@ def test_permission_client():
         and sse.get("gate") == "gate1"
         and isinstance(sse.get("deniedTables"), list)
         and any(t.get("applyUrl", "").startswith("http") for t in sse["deniedTables"])
+        and any(t.get("categoryId") is not None for t in sse["deniedTables"])
+        and any(t.get("tableId") is not None for t in sse["deniedTables"])
         and any(a.get("type") == "permission_apply" for a in sse.get("actions", []))
     )
     case("perm/sse_payload_shape",
          "上一个 deny 结果, gate_label='gate1'",
-         "type='permission_denied', gate='gate1', deniedTables 含 applyUrl, actions 含 'permission_apply'",
+         "type='permission_denied', gate='gate1', deniedTables 含 applyUrl/categoryId/tableId, actions 含 'permission_apply'",
          f"type={sse.get('type')}, gate={sse.get('gate')}, denied_count={len(sse.get('deniedTables', []))}",
          sse_ok, g)
 
@@ -429,8 +431,11 @@ Response 200 - 有拒绝:
           "name":        "orders",
           "displayName": "订单表",
           "catalogPath": "sales/orders",
+          "tableId":     1001,
+          "categoryId":  2001,
+          "categoryName": "orders 目录",
           "reason":      "no permission",
-          "applyUrl":    "http://platform.local/apply?table=orders"
+          "applyUrl":    "http://platform.local/dataresource/l4detail?id=2001&from=sqlbot"
         }
       ],
       "datasourceId": <id>
@@ -442,7 +447,7 @@ Response 200 - 有拒绝:
 - Gate 1：`generate_sql` 后立即调用（防 LLM 选了无权表）
 - Gate 2：`execute_sql` 前再调一次（防 generate_filter / 动态 SQL 改写引入新表）
 
-任一返回 `allowed=false` → SQLBot 通过 SSE 推 `permission_denied` 事件 + applyUrl，前端引导用户申请权限。
+任一返回 `allowed=false` → SQLBot 通过 SSE 推 `permission_denied` 事件，并透传 `tableId/categoryId/categoryName/applyUrl`，前端引导用户申请权限。
 
 ### 5.3 权限申请（可选，Phase 3c）
 
@@ -451,7 +456,7 @@ POST /openapi/sqlbot/permission-applies
 Body: { "tables": [...], "chatId": ..., "reason": "..." }
 ```
 
-让用户点 SSE 中 actions[0] 时直接提交申请。如果中台已有内部 portal，可以仅提供 `applyUrl` 让前端跳转，不必新开接口。
+让用户点 SSE 中 actions[0] 时直接提交申请。如果 SQLBot 以 qiankun 子应用运行，应优先用 `categoryId` 作为 `resourceIds` 通知中台容器打开申请弹窗；独立运行时可以使用 `applyUrl` 兜底跳转。
 
 ### 5.4 未匹配问题记录（可选，Phase 3c）
 
