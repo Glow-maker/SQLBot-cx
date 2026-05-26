@@ -364,7 +364,7 @@ const btnSelectClick = (val: any) => {
       </el-icon>
       <div class="name">{{ info.name }}</div>
       <div class="export-remark">
-        <el-button style="margin-right: 12px" secondary @click="downloadTemplate">
+        <el-button style="margin-right: 12px" @click="downloadTemplate" secondary>
           <template #icon>
             <icon_import_outlined></icon_import_outlined>
           </template>
@@ -381,17 +381,10 @@ const btnSelectClick = (val: any) => {
         <div class="select-table_top">
           {{ $t('ds.tables') }}
 
-          <el-tooltip
-            effect="dark"
-            offset="10"
-            :content="$t('ds.form.choose_tables')"
-            placement="top"
-          >
-            <el-button style="margin-right: -4px" text @click="handleSelectTableList">
-              <el-icon size="18">
-                <icon_form_outlined></icon_form_outlined>
-              </el-icon>
-            </el-button>
+          <el-tooltip effect="dark" :content="$t('ds.form.choose_tables')" placement="top">
+            <el-icon size="18" @click="handleSelectTableList">
+              <icon_form_outlined></icon_form_outlined>
+            </el-icon>
           </el-tooltip>
         </div>
         <el-input
@@ -788,10 +781,6 @@ const btnSelectClick = (val: any) => {
           padding-left: 8px;
           border-radius: 4px;
           cursor: pointer;
-
-          &:not(:last-child) {
-            margin-bottom: 2px;
-          }
 
           &.disabled-table {
             background: #dee0e3 !important;

@@ -1,6 +1,6 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
-// @ts-expect-error eslint-disable-next-line @typescript-eslint/ban-ts-comment
-import Layout from '@/components/layout/index.vue'
+import { createRouter, createWebHistory } from 'vue-router'
+import { qiankunWindow } from 'vite-plugin-qiankun/es/helper'
+// import Layout from '@/components/layout/index.vue'
 import LayoutDsl from '@/components/layout/LayoutDsl.vue'
 import SinglePage from '@/components/layout/SinglePage.vue'
 import login from '@/views/login/index.vue'
@@ -12,7 +12,6 @@ import Model from '@/views/system/model/Model.vue'
 // import Embedded from '@/views/system/embedded/index.vue'
 // import SetAssistant from '@/views/system/embedded/iframe.vue'
 import SystemEmbedded from '@/views/system/embedded/Page.vue'
-import Variables from '@/views/system/variables/index.vue'
 
 import assistantTest from '@/views/system/embedded/Test.vue'
 import assistant from '@/views/embedded/index.vue'
@@ -221,12 +220,6 @@ export const routes = [
             meta: { title: t('parameter.parameter_configuration') },
           },
           {
-            path: 'variables',
-            name: 'variables',
-            component: Variables,
-            meta: { title: t('variables.system_variables') },
-          },
-          {
             path: 'authentication',
             name: 'authentication',
             component: Authentication,
@@ -288,7 +281,7 @@ export const routes = [
   },
 ]
 const router = createRouter({
-  history: createWebHashHistory(),
+  history: createWebHistory(qiankunWindow.__POWERED_BY_QIANKUN__ ? '/sqlbot' : '/'),
   routes,
 })
 watchRouter(router)

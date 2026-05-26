@@ -103,7 +103,7 @@ export const UserStore = defineStore('user', {
         isPlatform()
       ) {
         const currentPath = getCurrentRouter()
-        let logout_url = getSQLBotAddr() + '#/login'
+        let logout_url = getSQLBotAddr() + '/login'
         if (currentPath) {
           logout_url += `?redirect=${currentPath}`
         }

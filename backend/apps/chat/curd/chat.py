@@ -16,6 +16,7 @@ from apps.db.constant import DB
 from apps.db.db import exec_sql
 from apps.system.crud.assistant import AssistantOutDs, AssistantOutDsFactory
 from apps.system.schemas.system_schema import AssistantOutDsSchema
+from common.core.config import settings
 from common.core.deps import CurrentAssistant, SessionDep, CurrentUser, Trans
 from common.utils.data_format import DataFormat
 from common.utils.utils import extract_nested_json, SQLBotLogUtil
@@ -314,13 +315,25 @@ def get_chat_with_records(session: SessionDep, chart_id: int, current_user: Curr
         raise Exception(f"Chat with id {chart_id} not Owned by the current user")
     chat_info = ChatInfo(**chat.model_dump())
 
-    if current_assistant and current_assistant.type in dynamic_ds_types:
+    logical_ds_chat = (
+        current_assistant
+        and current_assistant.type in dynamic_ds_types
+        and settings.PLATFORM_DATASOURCE_ENABLED
+        and settings.PLATFORM_LOGICAL_DATASOURCE_ENABLED
+        and not chat.datasource
+    )
+    if logical_ds_chat:
+        ds = None
+    elif current_assistant and current_assistant.type in dynamic_ds_types and chat.datasource:
         out_ds_instance = AssistantOutDsFactory.get_instance(current_assistant)
         ds = out_ds_instance.get_ds(chat.datasource, trans)
     else:
         ds = session.get(CoreDatasource, chat.datasource) if chat.datasource else None
 
-    if not ds:
+    if logical_ds_chat:
+        chat_info.datasource_exists = True
+        chat_info.datasource_name = '全域数据目录'
+    elif not ds:
         chat_info.datasource_exists = False
         chat_info.datasource_name = 'Datasource not exist'
     else:
@@ -715,7 +728,8 @@ def create_chat(session: SessionDep, current_user: CurrentUser, create_chat_obj:
         if current_assistant and current_assistant.type == 1:
             out_ds_instance: AssistantOutDs = AssistantOutDsFactory.get_instance(current_assistant)
             ds = out_ds_instance.get_ds(chat.datasource)
-            ds.type_name = DB.get_db(ds.type)
+            # DB.get_db 返回 enum member，.db_name 取 display name (如 '达梦')
+            ds.type_name = DB.get_db(ds.type).db_name
         else:
             ds = session.get(CoreDatasource, create_chat_obj.datasource)
             if ds.oid != current_user.oid:

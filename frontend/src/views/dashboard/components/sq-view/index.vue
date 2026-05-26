@@ -156,11 +156,8 @@ defineExpose({
       </div>
     </div>
     <div class="chart-show-area">
-      <div v-if="viewInfo.status === 'failed'" class="error-info">
-        {{ viewInfo.message }}
-      </div>
       <ChartComponent
-        v-else-if="viewInfo.id"
+        v-if="viewInfo.id"
         :id="outerId || viewInfo.id"
         ref="chartRef"
         :type="chartType"
@@ -385,16 +382,5 @@ defineExpose({
       font-size: 12px !important;
     }
   }
-}
-
-.error-info {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  font-size: 12px;
-  color: var(--N600, #646a73);
 }
 </style>

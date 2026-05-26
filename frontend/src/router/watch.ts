@@ -12,8 +12,6 @@ const userStore = useUserStore()
 const { wsCache } = useCache()
 const whiteList = ['/login', '/admin-login']
 const assistantWhiteList = ['/assistant', '/embeddedPage', '/embeddedCommon', '/401']
-
-const wsAdminRouterList = ['/ds/index', '/as/index']
 export const watchRouter = (router: Router) => {
   router.beforeEach(async (to: any, from: any, next: any) => {
     await loadXpackStatic()
@@ -37,20 +35,15 @@ export const watchRouter = (router: Router) => {
       next(toLoginPage(to.fullPath))
       return
     }
+    let isFirstDynamicPath = false
     if (!userStore.getUid) {
       await userStore.info()
       generateDynamicRouters(router)
-      const isFirstDynamicPath = to?.path && ['/ds/index', '/as/index'].includes(to.path)
+      isFirstDynamicPath = to?.path && ['/ds/index', '/as/index'].includes(to.path)
       if (isFirstDynamicPath) {
-        if (userStore.isSpaceAdmin) {
-          next({ ...to, replace: true })
-          return
-        }
+        next({ ...to, replace: true })
+        return
       }
-    }
-    if (to.path === '/docs') {
-      location.href = to.fullPath
-      return
     }
     if (to.path === '/' || accessCrossPermission(to)) {
       next('/chat')
@@ -69,13 +62,8 @@ const accessCrossPermission = (to: any) => {
   if (!to?.path) return false
   return (
     (to.path.startsWith('/system') && !userStore.isAdmin) ||
-    (to.path.startsWith('/set') && !userStore.isSpaceAdmin) ||
-    (isWsAdminRouter(to) && !userStore.isSpaceAdmin)
+    (to.path.startsWith('/set') && !userStore.isSpaceAdmin)
   )
-}
-
-const isWsAdminRouter = (to?: any) => {
-  return wsAdminRouterList.some((item: string) => to?.path?.startsWith(item))
 }
 const loadXpackStatic = () => {
   if (document.getElementById('sqlbot_xpack_static')) {

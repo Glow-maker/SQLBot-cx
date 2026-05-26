@@ -376,11 +376,16 @@
         </el-scrollbar>
       </el-main>
       <el-footer
-        v-if="computedMessages.length > 0 || (!isCompletePage && !selectAssistantDs)"
+        v-if="
+          computedMessages.length > 0 ||
+          (!isCompletePage && !selectAssistantDs) ||
+          logicalDatasourceEnabled ||
+          isInQiankun
+        "
         class="chat-footer"
       >
         <div class="input-wrapper" @click="clickInput">
-          <div v-if="isCompletePage || selectAssistantDs" class="datasource">
+          <div v-if="(isCompletePage || selectAssistantDs) && !logicalDatasourceEnabled" class="datasource">
             <template v-if="currentChat.datasource && currentChat.datasource_name">
               {{ t('qa.selected_datasource') }}:
               <img
@@ -449,6 +454,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { qiankunWindow } from 'vite-plugin-qiankun/es/helper'
 import { Chat, chatApi, ChatInfo, type ChatMessage, ChatRecord } from '@/api/chat'
 import ChatRow from './ChatRow.vue'
 import ChartAnswer from './answer/ChartAnswer.vue'
@@ -482,6 +488,7 @@ import { isMobile } from '@/utils/utils'
 import router from '@/router'
 import QuickQuestion from '@/views/chat/QuickQuestion.vue'
 import { useChatConfigStore } from '@/stores/chatConfig.ts'
+import { isPlatformLogicalDatasourceEnabled } from '@/utils/platform'
 const userStore = useUserStore()
 const props = defineProps<{
   startChatDsId?: number
@@ -502,6 +509,8 @@ const defaultFloatPopoverStyle = ref({
 })
 
 const isCompletePage = computed(() => !assistantStore.getAssistant || assistantStore.getEmbedded)
+// qiankun 子应用嵌入模式：强制显示输入框，绕开 assistant store 初始化时序问题
+const isInQiankun = computed(() => !!qiankunWindow.__POWERED_BY_QIANKUN__)
 const embeddedHistoryHidden = computed(
   () => assistantStore.getAssistant && !assistantStore.getHistory
 )
@@ -509,6 +518,7 @@ const embeddedHistoryHidden = computed(
 const selectAssistantDs = computed(() => {
   return assistantStore.getAssistant && !assistantStore.getAutoDs
 })
+const logicalDatasourceEnabled = computed(() => isPlatformLogicalDatasourceEnabled())
 const customName = computed(() => {
   if (!isCompletePage.value && props.pageEmbedded) return props.appName
   return ''
@@ -665,6 +675,11 @@ const createNewChat = async () => {
     return
   }
   goEmpty()
+  if (logicalDatasourceEnabled.value) {
+    currentChat.value = new ChatInfo()
+    currentChatId.value = undefined
+    return
+  }
   if (!isCompletePage.value && !selectAssistantDs.value) {
     currentChat.value = new ChatInfo()
     currentChatId.value = undefined
@@ -735,7 +750,6 @@ function onChatCreatedQuick(chat: ChatInfo) {
 }
 
 const recommendQuestionRef = ref()
-const quickQuestionRef = ref()
 
 function onChatCreated(chat: ChatInfo) {
   if (chat.records.length === 1 && !chat.records[0].recommended_question) {
@@ -795,6 +809,13 @@ function onChatStop() {
 }
 const assistantPrepareSend = async () => {
   if (
+    logicalDatasourceEnabled.value &&
+    (currentChatId.value == null || typeof currentChatId.value == 'undefined')
+  ) {
+    await hiddenChatCreatorRef.value?.createChat()
+    return
+  }
+  if (
     !isCompletePage.value &&
     !selectAssistantDs.value &&
     (currentChatId.value == null || typeof currentChatId.value == 'undefined')
@@ -823,6 +844,11 @@ const sendMessage = async (
     }, 300)
   }
   await assistantPrepareSend()
+  if (currentChatId.value == null || typeof currentChatId.value == 'undefined') {
+    loading.value = false
+    isTyping.value = false
+    return
+  }
   const currentRecord = new ChatRecord()
   currentRecord.create_time = new Date()
   currentRecord.chat_id = currentChatId.value
@@ -934,25 +960,17 @@ async function clickAnalysis(id?: number) {
 }
 
 function getRecordUsage(recordId: any) {
-  console.debug('getRecordUsage id: ', recordId)
-  nextTick(() => {
-    chatApi
-      .get_chart_usage(recordId)
-      .then((res) => {
-        const logHistory = chatApi.toChatLogHistory(res)
-        if (logHistory) {
-          currentChat.value.records.forEach((record) => {
-            if (record.id === recordId) {
-              record.duration = logHistory.duration
-              record.finish_time = logHistory.finish_time
-              record.total_tokens = logHistory.total_tokens
-            }
-          })
+  chatApi.get_chart_usage(recordId).then((res) => {
+    const logHistory = chatApi.toChatLogHistory(res)
+    if (logHistory) {
+      currentChat.value.records.forEach((record) => {
+        if (record.id === recordId) {
+          record.duration = logHistory.duration
+          record.finish_time = logHistory.finish_time
+          record.total_tokens = logHistory.total_tokens
         }
       })
-      .catch((e) => {
-        console.error(e)
-      })
+    }
   })
 }
 
@@ -1149,7 +1167,7 @@ onMounted(() => {
     }
   }
   .hidden-sidebar-btn {
-    z-index: 11;
+    z-index: 1;
     position: absolute;
     padding: 16px;
     top: 0;
@@ -1183,8 +1201,6 @@ onMounted(() => {
     border-radius: 0 12px 12px 0;
 
     .no-horizontal.ed-scrollbar {
-      position: relative;
-      z-index: 10;
       .ed-scrollbar__bar.is-horizontal {
         display: none;
       }
@@ -1205,6 +1221,8 @@ onMounted(() => {
     align-items: center;
     padding-left: 56px;
     padding-right: 56px;
+    position: relative;
+    z-index: 10;
 
     &.no-sidebar {
       padding-left: 96px;

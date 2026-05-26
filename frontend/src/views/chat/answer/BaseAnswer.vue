@@ -49,7 +49,11 @@ const reasoningContent = computed<Array<string>>(() => {
   return result
 })
 
+// VITE_SHOW_REASONING=false 时隐藏"查看思考过程"按钮（中台嵌入场景隐去 LLM 推理）
+const showReasoning = (import.meta.env.VITE_SHOW_REASONING ?? 'true') !== 'false'
+
 const hasReasoning = computed<boolean>(() => {
+  if (!showReasoning) return false
   if (reasoningContent.value.length > 0) {
     for (let i = 0; i < reasoningContent.value.length; i++) {
       if (reasoningContent.value[i] && reasoningContent.value[i].trim() !== '') {
@@ -74,7 +78,7 @@ onMounted(() => {
 
 <template>
   <div class="base-answer-block">
-    <el-button v-if="message.isTyping || hasReasoning" class="thinking-btn" @click="clickShow">
+    <el-button v-if="showReasoning && (message.isTyping || hasReasoning)" class="thinking-btn" @click="clickShow">
       <div class="thinking-btn-inner">
         <span v-if="message.isTyping">{{ t('qa.thinking') }}</span>
         <span v-else>{{ t('qa.thinking_step') }}</span>

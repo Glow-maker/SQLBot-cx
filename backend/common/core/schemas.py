@@ -20,6 +20,8 @@ class Token(SQLModel):
 class XOAuth2PasswordBearer(OAuth2PasswordBearer):
     async def __call__(self, request: Request) -> Optional[str]:
         authorization = request.headers.get(settings.TOKEN_KEY)
+        if not authorization and settings.PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER:
+            authorization = request.headers.get("Authorization")
         if request.headers.get(settings.ASSISTANT_TOKEN_KEY):
             authorization = request.headers.get(settings.ASSISTANT_TOKEN_KEY)
         scheme, param = get_authorization_scheme_param(authorization)

@@ -11,6 +11,7 @@ import icon_sidebar_outlined from '@/assets/svg/icon_sidebar_outlined.svg'
 import icon_new_chat_outlined from '@/assets/svg/icon_new_chat_outlined.svg'
 import { useUserStore } from '@/stores/user'
 import router from '@/router'
+import { isPlatformLogicalDatasourceEnabled } from '@/utils/platform'
 const userStore = useUserStore()
 const props = withDefaults(
   defineProps<{
@@ -46,10 +47,7 @@ const emits = defineEmits([
 
 const assistantStore = useAssistantStore()
 const isCompletePage = computed(() => !assistantStore.getAssistant || assistantStore.getEmbedded)
-
-const selectAssistantDs = computed(() => {
-  return assistantStore.getAssistant && !assistantStore.getAutoDs
-})
+const logicalDatasourceEnabled = computed(() => isPlatformLogicalDatasourceEnabled())
 
 const search = ref<string>()
 
@@ -151,7 +149,10 @@ const createNewChat = async () => {
 }
 
 async function doCreateNewChat() {
-  if (!isCompletePage.value && !selectAssistantDs.value) {
+  if (!isCompletePage.value) {
+    return
+  }
+  if (logicalDatasourceEnabled.value) {
     return
   }
   chatCreatorRef.value?.showDs()
@@ -259,11 +260,7 @@ function onChatRenamed(chat: Chat) {
       />
     </el-main>
 
-    <ChatCreator
-      v-if="isCompletePage || selectAssistantDs"
-      ref="chatCreatorRef"
-      @on-chat-created="onChatCreated"
-    />
+    <ChatCreator v-if="isCompletePage" ref="chatCreatorRef" @on-chat-created="onChatCreated" />
   </el-container>
 </template>
 

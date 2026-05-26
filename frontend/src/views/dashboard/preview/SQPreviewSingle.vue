@@ -4,8 +4,7 @@ import { load_resource_prepare } from '@/views/dashboard/utils/canvasUtils.ts'
 import { onMounted, reactive, ref } from 'vue'
 import router from '@/router'
 
-const previewCanvasContainer = ref(null)
-const dashboardPreview = ref(null)
+
 const dataInitState = ref(true)
 const downloadStatus = ref(false)
 const state = reactive({

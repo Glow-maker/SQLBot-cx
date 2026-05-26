@@ -8,6 +8,9 @@ node_modules/
 *-lock.json
 components.d.ts
 
+# 集成改造期内部文档，暂不上传（保留 archive 与项目原有文档）
+docs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -60,6 +63,14 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+
+# Runtime logs
+logs/
+backend/logs/
+
+# Runtime database/data files
+backend/data/
+data/
 
 # Translations
 *.mo

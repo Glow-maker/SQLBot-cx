@@ -123,7 +123,7 @@ export const toLoginSuccess = (router: any) => {
 export const getCurrentRouter = () => {
   const hash = location.hash
   if (!hash) return null
-  return hash.replace('#/login?redirect=', '')
+  return hash.replace('/login?redirect=', '')
 }
 
 export const setTitle = (title?: string) => {

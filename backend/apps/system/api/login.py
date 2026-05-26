@@ -1,21 +1,165 @@
-from typing import Annotated
+from datetime import timedelta
+from typing import Annotated, Any
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
-from apps.system.schemas.logout_schema import LogoutSchema
-from apps.system.schemas.system_schema import BaseUserDTO
-from common.core.deps import SessionDep, Trans
-from common.utils.crypto import sqlbot_decrypt
-from ..crud.user import authenticate
-from common.core.security import create_access_token
-from datetime import timedelta
+
+from common.audit.models.log_model import OperationModules, OperationType
+from common.audit.schemas.logger_decorator import LogConfig, system_log
 from common.core.config import settings
+from common.core.deps import SessionDep, Trans
 from common.core.schemas import Token
+from common.core.security import create_access_token
+from common.utils.crypto import sqlbot_decrypt
+from common.utils.utils import SQLBotLogUtil
 from sqlbot_xpack.authentication.manage import logout as xpack_logout
 
-from common.audit.models.log_model import OperationType, OperationModules
-from common.audit.schemas.logger_decorator import system_log, LogConfig
+from apps.system.schemas.logout_schema import LogoutSchema
+from apps.system.schemas.system_schema import BaseUserDTO
+from ..crud.user import authenticate
 
 router = APIRouter(tags=["login"], prefix="/login")
+
+
+def _get_local_admin_accounts() -> set[str]:
+    raw_accounts = settings.PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS or ""
+    return {item.strip().lower() for item in str(raw_accounts).split(",") if item.strip()}
+
+
+def _is_local_admin_account(account: str) -> bool:
+    if not settings.PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN:
+        return False
+    account_text = str(account).strip().lower()
+    if not account_text:
+        return False
+    return account_text in _get_local_admin_accounts()
+
+
+def _local_sqlbot_login(
+    session: SessionDep,
+    trans: Trans,
+    account: str,
+    password: str,
+) -> Token:
+    user: BaseUserDTO = authenticate(session=session, account=account, password=password)
+    if not user:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.account_pwd_error'))
+    if not user.oid or user.oid == 0:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.no_associated_ws', msg=trans('i18n_concat_admin')))
+    if user.status != 1:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.user_disable', msg=trans('i18n_concat_admin')))
+    if user.origin is not None and user.origin != 0:
+        raise HTTPException(status_code=400, detail=trans('i18n_login.origin_error'))
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    user_dict = user.to_dict()
+    return Token(access_token=create_access_token(user_dict, expires_delta=access_token_expires))
+
+
+def _build_platform_auth_url(path: str) -> str:
+    base_url = settings.PLATFORM_AUTH_BASE_URL
+    if not base_url:
+        raise HTTPException(status_code=500, detail="PLATFORM_AUTH_BASE_URL is not configured.")
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _parse_platform_common_result(response: httpx.Response, scene: str) -> dict[str, Any]:
+    response_text = response.text
+    try:
+        body = response.json()
+    except ValueError as exc:
+        SQLBotLogUtil.exception(f"Platform {scene} response parse failed: {response_text}")
+        raise HTTPException(status_code=502, detail=f"Invalid platform auth {scene} response.") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=502, detail=f"Invalid platform auth {scene} response structure.")
+    return body
+
+
+async def _resolve_platform_tenant_id(client: httpx.AsyncClient) -> int | None:
+    if settings.PLATFORM_AUTH_FIXED_TENANT_ID is not None:
+        return int(settings.PLATFORM_AUTH_FIXED_TENANT_ID)
+
+    tenant_name = settings.PLATFORM_AUTH_FIXED_TENANT_NAME
+    if not tenant_name:
+        return None
+
+    tenant_id_url = _build_platform_auth_url(settings.PLATFORM_AUTH_TENANT_ID_BY_NAME_PATH)
+    try:
+        tenant_id_response = await client.get(tenant_id_url, params={"name": tenant_name})
+    except httpx.HTTPError as exc:
+        SQLBotLogUtil.exception(f"Platform tenant-id query request failed: {exc}")
+        return None
+
+    body = _parse_platform_common_result(tenant_id_response, "tenant-id query")
+    if body.get("code") != 0:
+        SQLBotLogUtil.warning(f"Platform tenant-id query failed: {body}")
+        return None
+
+    tenant_id = body.get("data")
+    if tenant_id is None:
+        return None
+    try:
+        return int(tenant_id)
+    except (TypeError, ValueError):
+        SQLBotLogUtil.warning(f"Platform tenant-id query returned invalid data: {tenant_id}")
+        return None
+
+
+async def _platform_login(
+    username: str,
+    password: str,
+    trans: Trans,
+) -> Token:
+    payload: dict[str, Any] = {
+        "username": username,
+        "password": password,
+        "rememberMe": settings.PLATFORM_AUTH_LOGIN_REMEMBER_ME,
+    }
+    if settings.PLATFORM_AUTH_FIXED_TENANT_NAME:
+        payload["tenantName"] = settings.PLATFORM_AUTH_FIXED_TENANT_NAME
+
+    login_url = _build_platform_auth_url(settings.PLATFORM_AUTH_LOGIN_PATH)
+    timeout = settings.PLATFORM_AUTH_HTTP_TIMEOUT_SECONDS
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            tenant_id = await _resolve_platform_tenant_id(client)
+            headers: dict[str, str] = {}
+            if tenant_id is not None:
+                headers[settings.PLATFORM_AUTH_TENANT_ID_HEADER] = str(tenant_id)
+            elif settings.PLATFORM_AUTH_REQUIRE_TENANT_ID_HEADER:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Platform tenant-id is required but not resolved. Please set PLATFORM_AUTH_FIXED_TENANT_ID.",
+                )
+            response = await client.post(login_url, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        SQLBotLogUtil.exception(f"Platform login request failed: {exc}")
+        raise HTTPException(status_code=502, detail="Platform auth service is unavailable.") from exc
+
+    body = _parse_platform_common_result(response, "login")
+
+    code = body.get("code")
+    if code != 0:
+        msg = body.get("msg") or trans("i18n_login.account_pwd_error")
+        # 登录失败使用 400，避免前端将其按“会话失效(401)”处理并触发整页 reload
+        raise HTTPException(status_code=400, detail=str(msg))
+
+    data = body.get("data")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="Invalid platform auth response data.")
+
+    access_token = data.get("accessToken")
+    if not access_token:
+        raise HTTPException(status_code=502, detail="Platform auth missing accessToken.")
+
+    platform_info = {
+        "userId": data.get("userId"),
+        "refreshToken": data.get("refreshToken"),
+        "expiresTime": data.get("expiresTime"),
+    }
+    return Token(access_token=str(access_token), token_type="bearer", platform_info=platform_info)
+
 
 @router.post("/access-token")
 @system_log(LogConfig(
@@ -30,20 +174,18 @@ async def local_login(
 ) -> Token:
     origin_account = await sqlbot_decrypt(form_data.username)
     origin_pwd = await sqlbot_decrypt(form_data.password)
-    user: BaseUserDTO = authenticate(session=session, account=origin_account, password=origin_pwd)
-    if not user:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.account_pwd_error'))
-    if not user.oid or user.oid == 0:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.no_associated_ws', msg = trans('i18n_concat_admin')))
-    if user.status != 1:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.user_disable', msg = trans('i18n_concat_admin')))
-    if user.origin is not None and user.origin != 0:
-        raise HTTPException(status_code=400, detail=trans('i18n_login.origin_error'))
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    user_dict = user.to_dict()
-    return Token(access_token=create_access_token(
-        user_dict, expires_delta=access_token_expires
-    ))
+
+    # 允许保留 SQLBot 本地管理员登录（例如 admin），避免全量切到中台后失去本地运维入口
+    if _is_local_admin_account(origin_account):
+        return _local_sqlbot_login(session, trans, origin_account, origin_pwd)
+
+    if settings.PLATFORM_AUTH_LOGIN_PROXY_ENABLED:
+        return await _platform_login(origin_account, origin_pwd, trans)
+
+    if settings.PLATFORM_AUTH_ENABLED and settings.PLATFORM_AUTH_STRICT_MODE:
+        raise HTTPException(status_code=403, detail="Local login is disabled in platform auth strict mode.")
+
+    return _local_sqlbot_login(session, trans, origin_account, origin_pwd)
 
 @router.post("/logout")    
 async def logout(session: SessionDep, request: Request, dto: LogoutSchema):

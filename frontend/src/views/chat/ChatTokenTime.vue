@@ -19,7 +19,7 @@ function getLogList() {
     <span>{{ $t('parameter.tokens_required') }} {{ totalTokens }}</span>
     <span style="margin-left: 12px">{{ $t('parameter.time_execution') }} {{ duration }} s</span>
 
-    <div class="detail" @click="getLogList">
+    <div @click="getLogList" class="detail">
       <el-icon style="margin-right: 4px" size="16">
         <icon_logs_outlined></icon_logs_outlined>
       </el-icon>
@@ -49,20 +49,6 @@ function getLogList() {
     margin-left: auto;
     display: flex;
     align-items: center;
-    position: relative;
-    &:hover {
-      &::after {
-        content: '';
-        background: #1f23291a;
-        border-radius: 6px;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        width: 84px;
-        height: 26px;
-        position: absolute;
-      }
-    }
   }
 }
 </style>

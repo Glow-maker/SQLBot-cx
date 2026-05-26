@@ -63,6 +63,50 @@ class Settings(BaseSettings):
     TOKEN_KEY: str = "X-SQLBOT-TOKEN"
     DEFAULT_PWD: str = "SQLBot@123456"
     ASSISTANT_TOKEN_KEY: str = "X-SQLBOT-ASSISTANT-TOKEN"
+    PLATFORM_AUTH_ENABLED: bool = False
+    PLATFORM_AUTH_BASE_URL: str | None = None
+    PLATFORM_AUTH_LOGIN_PATH: str = "/admin-api/system/auth/login"
+    PLATFORM_AUTH_REFRESH_PATH: str = "/admin-api/system/auth/refresh-token"
+    PLATFORM_AUTH_LOGOUT_PATH: str = "/admin-api/system/auth/logout"
+    PLATFORM_AUTH_LOGIN_PROXY_ENABLED: bool = False
+    PLATFORM_AUTH_FIXED_TENANT_NAME: str | None = "八院"
+    PLATFORM_AUTH_FIXED_TENANT_ID: int | None = None
+    PLATFORM_AUTH_TENANT_ID_BY_NAME_PATH: str = "/admin-api/system/tenant/get-id-by-name"
+    PLATFORM_AUTH_TENANT_ID_HEADER: str = "tenant-id"
+    PLATFORM_AUTH_REQUIRE_TENANT_ID_HEADER: bool = True
+    PLATFORM_AUTH_LOGIN_REMEMBER_ME: bool = True
+    PLATFORM_AUTH_HTTP_TIMEOUT_SECONDS: float = 10.0
+    PLATFORM_AUTH_REDIS_URL: str | None = None
+    PLATFORM_AUTH_REDIS_KEY_PREFIX: str = "oauth2_access_token:%s"
+    PLATFORM_AUTH_USERINFO_ACCOUNT_FIELD: str = "username"
+    PLATFORM_AUTH_REQUIRE_USER_TYPE: int | None = None
+    PLATFORM_AUTH_STRICT_MODE: bool = False
+    PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER: bool = True
+    PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN: bool = False
+    PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS: str = "admin"
+
+    # === 数据中台 data 服务（数据源元数据来源，主线二 Phase 2 启用）===
+    # 开关：为 false 时 SQLBot 行为完全与当前一致（本地 ds），为 true 时 TokenMiddleware
+    # 会在解析出中台身份后注入虚拟 assistant 并由 AssistantOutDs 远程拉取 ds 列表
+    PLATFORM_DATASOURCE_ENABLED: bool = False
+    PLATFORM_DATASOURCE_BASE_URL: str | None = None
+    PLATFORM_DATASOURCE_LIST_PATH: str = "/openapi/sqlbot/datasources/query"
+    PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
+    # AssistantOutDs 远程拉取结果的本地 TTL 缓存秒数，避免打爆中台
+    PLATFORM_DATASOURCE_CACHE_TTL_SECONDS: int = 60
+    # 统一逻辑数据源：前端不选 ds，SQLBot 从中台全量表目录路由到单个真实 ds 执行
+    PLATFORM_LOGICAL_DATASOURCE_ENABLED: bool = False
+    # 统一逻辑数据源表路由召回：先从全量目录召回候选表，再交给 LLM 最终路由
+    PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED: bool = True
+    PLATFORM_LOGICAL_ROUTE_RECALL_COUNT: int = 50
+    PLATFORM_LOGICAL_ROUTE_KEYWORD_COUNT: int = 30
+    PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED: bool = True
+
+    # === 表级权限校验（主线二 Phase 3 启用，fail-closed）===
+    PLATFORM_PERMISSION_CHECK_PATH: str = "/openapi/sqlbot/table-permissions/check"
+    PLATFORM_PERMISSION_APPLY_PATH: str = "/openapi/sqlbot/permission-applies"
+    # 未匹配到 ds 时记录问题（供数据治理侧消费）
+    PLATFORM_UNMATCHED_QUESTION_PATH: str = "/openapi/sqlbot/unmatched-questions"
 
     CACHE_TYPE: Literal["redis", "memory", "None"] = "memory"
     CACHE_REDIS_URL: str | None = None  # Redis URL, e.g., "redis://[[username]:[password]]@localhost:6379/0"
@@ -132,6 +176,14 @@ class Settings(BaseSettings):
                      'PARSE_REASONING_BLOCK_ENABLED',
                      'PG_POOL_PRE_PING',
                      'TABLE_EMBEDDING_ENABLED',
+                     'PLATFORM_AUTH_ENABLED',
+                     'PLATFORM_AUTH_STRICT_MODE',
+                     'PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER',
+                     'PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN',
+                     'PLATFORM_DATASOURCE_ENABLED',
+                     'PLATFORM_LOGICAL_DATASOURCE_ENABLED',
+                     'PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED',
+                     'PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED',
                      mode='before')
     @classmethod
     def lowercase_bool(cls, v: Any) -> Any:

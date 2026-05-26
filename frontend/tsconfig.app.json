@@ -8,6 +8,9 @@
     "paths": {
       "@/*": ["src/*"]
     },
+    // "moduleResolution": "bundler",
+    // "verbatimModuleSyntax": false,
+    // "typeRoots": ["./src/types", "./node_modules/@types"],
 
     /* Linting */
     "strict": true,
@@ -16,5 +19,11 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "auto-imports.d.ts"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "src/types/**/*.d.ts",
+    "auto-imports.d.ts"
+  ]
 }

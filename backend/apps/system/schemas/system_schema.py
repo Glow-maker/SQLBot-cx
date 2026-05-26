@@ -169,6 +169,10 @@ class AssistantFieldSchema(BaseModel):
 
 class AssistantTableSchema(BaseModel):
     id: Optional[int] = None
+    tableId: Optional[int | str] = None
+    categoryId: Optional[int | str] = None
+    dataSourceId: Optional[int | str] = None
+    schemaName: Optional[str] = None
     name: Optional[str] = None
     comment: Optional[str] = None
     rule: Optional[str] = None
@@ -193,6 +197,7 @@ class AssistantOutDsSchema(AssistantOutDsBase):
     user: Optional[str] = None
     password: Optional[str] = None
     db_schema: Optional[str] = None
+    physicalDatasourceKey: Optional[str] = None
     extraParams: Optional[str] = None
     mode: Optional[str] = None
     tables: Optional[list[AssistantTableSchema]] = None

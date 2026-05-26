@@ -299,10 +299,6 @@ const getTableData = () => {
             cells.value.push(
               graph.createNode({
                 ...item,
-                position: {
-                  x: Number.parseInt(item.position.x),
-                  y: Number.parseInt(item.position.y),
-                },
                 height: LINE_HEIGHT + 15,
                 width: NODE_WIDTH,
               })
@@ -419,12 +415,12 @@ const save = () => {
   <svg style="position: fixed; top: -9999px" xmlns:xlink="http://www.w3.org/1999/xlink">
     <defs>
       <filter
-        id="filter-dropShadow-v0-3329848037"
         x="-1"
         y="-1"
         width="3"
         height="3"
         filterUnits="objectBoundingBox"
+        id="filter-dropShadow-v0-3329848037"
       >
         <feDropShadow
           stdDeviation="4"
@@ -436,18 +432,18 @@ const save = () => {
       </filter>
     </defs>
   </svg>
-  <div v-if="!nodeIds.length" v-loading="loading" class="relationship-empty">
+  <div v-loading="loading" v-if="!nodeIds.length" class="relationship-empty">
     {{ t('training.add_it_here') }}
   </div>
-  <div v-else id="container" v-loading="loading"></div>
+  <div v-loading="loading" v-else id="container"></div>
   <div
-    v-show="dragging"
-    class="drag-mask"
     @dragover.prevent.stop="dragover"
     @drop.prevent.stop="drop"
+    v-show="dragging"
+    class="drag-mask"
   ></div>
   <div class="save-btn">
-    <el-button v-if="nodeIds.length" type="primary" @click="save">
+    <el-button type="primary" v-if="nodeIds.length" @click="save">
       {{ t('common.save') }}
     </el-button>
   </div>

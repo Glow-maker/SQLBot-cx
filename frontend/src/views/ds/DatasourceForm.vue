@@ -116,7 +116,6 @@ const form = ref<any>({
   sheets: [],
   mode: 'service_name',
   timeout: 30,
-  lowVersion: false,
 })
 
 const close = () => {
@@ -160,10 +159,6 @@ const initForm = (item: any, editTable: boolean = false) => {
       form.value.sheets = configuration.sheets
       form.value.mode = configuration.mode
       form.value.timeout = configuration.timeout ? configuration.timeout : 30
-      form.value.lowVersion =
-        configuration.lowVersion !== null && configuration.lowVersion !== undefined
-          ? configuration.lowVersion
-          : true
     }
 
     if (editTable) {
@@ -235,7 +230,6 @@ const initForm = (item: any, editTable: boolean = false) => {
       sheets: [],
       mode: 'service_name',
       timeout: 30,
-      lowVersion: false,
     }
   }
   dialogVisible.value = true
@@ -323,7 +317,6 @@ const buildConf = () => {
       sheets: form.value.sheets,
       mode: form.value.mode,
       timeout: form.value.timeout,
-      lowVersion: form.value.lowVersion,
     })
   )
   const obj = JSON.parse(JSON.stringify(form.value))
@@ -339,7 +332,6 @@ const buildConf = () => {
   delete obj.sheets
   delete obj.mode
   delete obj.timeout
-  delete obj.lowVersion
   return obj
 }
 
@@ -678,13 +670,6 @@ defineExpose({
               <el-radio value="service_name">{{ t('ds.form.mode.service_name') }}</el-radio>
               <el-radio value="sid">{{ t('ds.form.mode.sid') }}</el-radio>
             </el-radio-group>
-          </el-form-item>
-          <el-form-item
-            v-if="form.type === 'sqlServer'"
-            :label="t('ds.form.low_version')"
-            prop="low_version"
-          >
-            <el-checkbox v-model="form.lowVersion" :label="t('ds.form.low_version')" />
           </el-form-item>
           <el-form-item v-if="form.type !== 'es'" :label="t('ds.form.extra_jdbc')">
             <el-input

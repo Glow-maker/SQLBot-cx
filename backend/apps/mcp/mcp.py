@@ -26,6 +26,7 @@ from common.core.config import settings
 from common.core.deps import SessionDep
 from common.core.schemas import TokenPayload, XOAuth2PasswordBearer, Token
 from common.core.security import create_access_token
+from common.core.token_resolver import resolve_platform_token_identity
 
 reusable_oauth2 = XOAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/login/access-token"
@@ -49,7 +50,26 @@ router = APIRouter(tags=["mcp"], prefix="/mcp")
 #     ))
 
 
-def get_user(session: SessionDep, token: str):
+async def get_user(session: SessionDep, token: str):
+    if settings.PLATFORM_AUTH_ENABLED:
+        platform_identity = await resolve_platform_token_identity(token)
+        if platform_identity:
+            is_admin = str(platform_identity.account).lower() == "admin" or int(platform_identity.user_id) == 1
+            return UserInfoDTO(
+                id=int(platform_identity.user_id),
+                account=str(platform_identity.account),
+                name=str(platform_identity.nickname or platform_identity.account),
+                oid=int(platform_identity.tenant_id),
+                email=f"{platform_identity.account}@platform.local",
+                status=1,
+                origin=1,
+                language="zh-CN",
+                weight=1 if is_admin else 0,
+                isAdmin=is_admin,
+            )
+        if settings.PLATFORM_AUTH_STRICT_MODE:
+            raise HTTPException(status_code=401, detail="Invalid or expired platform access token")
+
     try:
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
@@ -83,7 +103,7 @@ def get_user(session: SessionDep, token: str):
 
 @router.post("/mcp_ds_list", operation_id="mcp_datasource_list")
 async def datasource_list(session: SessionDep, token: str):
-    session_user = get_user(session, token)
+    session_user = await get_user(session, token)
     ds_list = get_datasource_list(session=session, user=session_user)
     result = []
     for item in ds_list:
@@ -105,6 +125,8 @@ async def datasource_list(session: SessionDep, token: str):
 
 @router.post("/mcp_start", operation_id="mcp_start")
 async def mcp_start(session: SessionDep, chat: ChatStart):
+    if settings.PLATFORM_AUTH_ENABLED and settings.PLATFORM_AUTH_STRICT_MODE:
+        raise HTTPException(status_code=403, detail="Local login is disabled in platform auth strict mode")
     user: BaseUserDTO = authenticate(session=session, account=chat.username, password=chat.password)
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect account or password")
@@ -122,7 +144,7 @@ async def mcp_start(session: SessionDep, chat: ChatStart):
 
 @router.post("/mcp_question", operation_id="mcp_question")
 async def mcp_question(session: SessionDep, chat: McpQuestion):
-    session_user = get_user(session, chat.token)
+    session_user = await get_user(session, chat.token)
     ds_id: Optional[int] = None
     if chat.datasource_id:
         if isinstance(chat.datasource_id, str):

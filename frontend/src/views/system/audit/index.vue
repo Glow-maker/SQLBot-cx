@@ -27,7 +27,7 @@ onMounted(() => {
   initUsers()
   initOptions()
 })
-const multipleTableRef = ref()
+
 const fieldList = ref<any>([])
 const pageInfo = reactive({
   currentPage: 1,
@@ -275,7 +275,7 @@ const initOptions = () => {
     <div
       v-if="!searchLoading"
       class="table-content"
-      :class="multipleSelectionAll?.length && 'show-pagination_height'"
+      :class="multipleSelectionAll?.length ? 'show-pagination_height' : ''"
     >
       <filter-text
         :total="pageInfo.total"
