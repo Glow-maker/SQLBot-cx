@@ -6,5 +6,6 @@ export declare global {
     __INJECTED_LOGIN_STATE__?: {
       token: string
     }
+    __SQLBOT_SEND_TO_MAIN__?: (type: string, data?: unknown) => void
   }
 }

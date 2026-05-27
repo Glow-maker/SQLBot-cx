@@ -1,6 +1,7 @@
 import concurrent
 import json
 import os
+import re
 import traceback
 import urllib.parse
 import warnings
@@ -23,11 +24,12 @@ from sqlbot_xpack.custom_prompt.models.custom_prompt_model import CustomPromptTy
 from sqlbot_xpack.license.license_manage import SQLBotLicenseUtil
 from sqlmodel import Session
 
+from apps.ai_model.embedding import EmbeddingModelCache
 from apps.ai_model.model_factory import LLMConfig, LLMFactory, get_default_config
 from common.utils.platform_permission import (
-    PermissionCheckResult, check_table_permissions, denied_tables_to_sse_payload, is_permission_check_enabled,
+    DeniedTable, PermissionCheckResult, check_table_permissions, denied_tables_to_sse_payload, is_permission_check_enabled,
 )
-from common.utils.sql_parser import extract_table_names, merge_tables
+from common.utils.sql_parser import SQLTableRef, extract_table_refs
 from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     save_error_message, save_sql_exec_data, save_chart_answer, save_chart, \
     finish_record, save_analysis_answer, save_predict_answer, save_predict_data, \
@@ -42,6 +44,7 @@ from apps.data_training.curd.data_training import get_training_template
 from apps.datasource.crud.datasource import get_table_schema
 from apps.datasource.crud.permission import get_row_permission_filters, is_normal_user
 from apps.datasource.embedding.ds_embedding import get_ds_embedding
+from apps.datasource.embedding.utils import cosine_similarity
 from apps.datasource.models.datasource import CoreDatasource
 from apps.db.db import exec_sql, get_version, check_connection
 from apps.system.crud.assistant import AssistantOutDs, AssistantOutDsFactory, get_assistant_ds
@@ -105,6 +108,10 @@ class LLMService:
         self.chunk_list = []
         self.current_user = current_user
         self.current_assistant = current_assistant
+        self.logical_route_table_names: Optional[list[str]] = None
+        self.logical_route_table_refs: Optional[list[dict[str, Any]]] = None
+        self.logical_route_tables: list[dict[str, Any]] = []
+        self.logical_route_physical_datasource_key: Optional[str] = None
         chat_id = chat_question.chat_id
         chat: Chat | None = session.get(Chat, chat_id)
         if not chat:
@@ -346,12 +353,16 @@ class LLMService:
                                                                   operate=OperationEnum.CHOOSE_TABLE,
                                                                   record_id=self.record.id,
                                                                   local_operation=True)
+        table_list = self.logical_route_table_refs or self.logical_route_table_names
+        physical_key = self.logical_route_physical_datasource_key if self._logical_datasource_enabled() else None
         self.chat_question.db_schema = self.out_ds_instance.get_db_schema(
-            self.ds.id, self.chat_question.question) if self.out_ds_instance else get_table_schema(
+            self.ds.id, self.chat_question.question, table_list=table_list,
+            physical_datasource_key=physical_key) if self.out_ds_instance else get_table_schema(
             session=_session,
             current_user=self.current_user,
             ds=self.ds,
-            question=self.chat_question.question)
+            question=self.chat_question.question,
+            table_list=table_list)
 
         self.current_logs[OperationEnum.CHOOSE_TABLE] = end_log(session=_session,
                                                                 log=self.current_logs[OperationEnum.CHOOSE_TABLE],
@@ -672,6 +683,585 @@ class LLMService:
 
         if _error:
             raise _error
+
+    def _is_platform_virtual_assistant(self) -> bool:
+        if not self.current_assistant:
+            return False
+        configuration = getattr(self.current_assistant, "configuration", None)
+        if isinstance(configuration, str):
+            try:
+                configuration = json.loads(configuration)
+            except Exception:
+                return False
+        return bool(configuration.get("platform_virtual")) if isinstance(configuration, dict) else False
+
+    # 主流程、召回、LLM 路由、SQL 校验、权限 Gate。
+    def _logical_datasource_enabled(self) -> bool:
+        return bool(
+            settings.PLATFORM_DATASOURCE_ENABLED
+            and settings.PLATFORM_LOGICAL_DATASOURCE_ENABLED
+            and self.current_assistant
+            and self.current_assistant.type in dynamic_ds_types
+            and self._is_platform_virtual_assistant()
+        )
+
+    def _ensure_out_ds_instance(self) -> AssistantOutDs:
+        if not self.current_assistant:
+            raise SingleMessageError("No assistant available for platform datasource routing")
+        if not self.out_ds_instance:
+            self.out_ds_instance = AssistantOutDsFactory.get_instance(self.current_assistant)
+        return self.out_ds_instance
+    # 所有 datasource 下的表拍平成全量表目录，供 LLM 选择
+    def _logical_table_entries(self) -> list[dict[str, Any]]:
+        out_ds_instance = self._ensure_out_ds_instance()
+        entries: list[dict[str, Any]] = []
+        for ds in out_ds_instance.ds_list or []:
+            physical_key = AssistantOutDs._physical_datasource_key(ds)
+            for table in ds.tables or []:
+                schema_name = self._table_schema_name(ds, table)
+                table_name = str(getattr(table, "name", "") or "")
+                table_id = getattr(table, "tableId", None) or getattr(table, "id", None)
+                field_preview = []
+                for field in (table.fields or [])[:20]:
+                    field_preview.append({
+                        "name": field.name,
+                        "type": field.type,
+                        "comment": field.comment,
+                    })
+                entries.append({
+                    "datasourceId": ds.id,
+                    "datasourceName": ds.name,
+                    "datasourceType": ds.type,
+                    "physicalDatasourceKey": physical_key,
+                    "host": getattr(ds, "host", None),
+                    "port": getattr(ds, "port", None),
+                    "dataSourceId": getattr(table, "dataSourceId", None) or ds.id,
+                    "tableId": table_id,
+                    "categoryId": getattr(table, "categoryId", None),
+                    "schemaName": schema_name,
+                    "name": table_name,
+                    "qualifiedName": self._qualified_table_name(schema_name, table_name),
+                    "comment": table.comment,
+                    "fields": field_preview,
+                })
+        return entries
+
+    @staticmethod
+    def _logical_table_entry_key(entry: dict[str, Any]) -> str:
+        return (
+            f"{entry.get('datasourceId')}::"
+            f"{str(entry.get('schemaName', '')).lower()}::"
+            f"{str(entry.get('name', '')).lower()}::"
+            f"{entry.get('tableId')}"
+        )
+
+    @staticmethod
+    def _logical_table_recall_text(entry: dict[str, Any]) -> str:
+        parts = [
+            entry.get("qualifiedName"),
+            entry.get("name"),
+            entry.get("comment"),
+            entry.get("datasourceName"),
+            entry.get("datasourceType"),
+            entry.get("schemaName"),
+        ]
+        for field in (entry.get("fields") or [])[:20]:
+            if isinstance(field, dict):
+                parts.extend([field.get("name"), field.get("type"), field.get("comment")])
+        return " ".join(str(part) for part in parts if part is not None and str(part).strip() != "")
+
+    @staticmethod
+    def _logical_route_terms(question: str) -> set[str]:
+        terms: set[str] = set()
+        for token in re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+", (question or "").lower()):
+            if not token:
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+                terms.add(token)
+                max_n = min(4, len(token))
+                for n in range(2, max_n + 1):
+                    for i in range(0, len(token) - n + 1):
+                        terms.add(token[i:i + n])
+            else:
+                terms.add(token)
+                terms.update(part for part in token.split("_") if len(part) >= 2)
+        return {term for term in terms if len(term) >= 2}
+
+    # 用问题文本匹配表名、schema.table、表注释、字段名、字段说明。中文会切 2-4 字 ngram，英文按 token/下划线切。
+    def _keyword_recall_logical_table_entries(
+        self, question: str, entries: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        limit = max(0, int(getattr(settings, "PLATFORM_LOGICAL_ROUTE_KEYWORD_COUNT", 30) or 0))
+        if not entries or limit <= 0:
+            return []
+        question_lower = (question or "").lower()
+        terms = self._logical_route_terms(question)
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        for idx, entry in enumerate(entries):
+            text = self._logical_table_recall_text(entry).lower()
+            name = str(entry.get("name") or "").lower()
+            qualified_name = str(entry.get("qualifiedName") or "").lower()
+            score = 0
+            if question_lower and question_lower in text:
+                score += 50
+            if name and name in question_lower:
+                score += 100
+            if qualified_name and qualified_name in question_lower:
+                score += 120
+            for term in terms:
+                if term in text:
+                    score += len(term)
+            if score > 0:
+                scored.append((score, idx, entry))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [entry for _, _, entry in scored[:limit]]
+
+    # 动态拼接每张表的召回文本，现算 embedding，和用户问题 embedding 做 cosine similarity 排序。这里不依赖中台返回 embedding，也不使用 CoreTable.embedding。
+    def _embedding_recall_logical_table_entries(
+        self, question: str, entries: list[dict[str, Any]], limit: int
+    ) -> list[dict[str, Any]]:
+        if (
+            not entries
+            or limit <= 0
+            or not getattr(settings, "PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED", True)
+            or not question
+        ):
+            return []
+        try:
+            texts = [self._logical_table_recall_text(entry) for entry in entries]
+            model = EmbeddingModelCache.get_model()
+            table_embeddings = model.embed_documents(texts)
+            question_embedding = model.embed_query(question)
+            scored: list[tuple[float, int, dict[str, Any]]] = []
+            for idx, embedding in enumerate(table_embeddings):
+                if embedding is None:
+                    continue
+                scored.append((cosine_similarity(question_embedding, embedding), idx, entries[idx]))
+            scored.sort(key=lambda item: (-item[0], item[1]))
+            return [entry for _, _, entry in scored[:limit]]
+        except Exception as e:
+            SQLBotLogUtil.warning(f"Logical datasource embedding recall failed: {e}")
+            return []
+
+    # 合并关键词结果 + embedding 结果，去重，最多保留 PLATFORM_LOGICAL_ROUTE_RECALL_COUNT=50 张。召回失败或为空时回退全量目录，为了不影响后续 LLM 选择。
+    def _recall_logical_table_entries(
+        self, question: str, entries: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not entries or not getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED", True):
+            return entries
+        limit = int(getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_COUNT", 50) or 50)
+        if limit <= 0:
+            return entries
+
+        keyword_entries = self._keyword_recall_logical_table_entries(question, entries)
+        embedding_entries = self._embedding_recall_logical_table_entries(question, entries, limit)
+
+        recalled: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in [*keyword_entries, *embedding_entries]:
+            key = self._logical_table_entry_key(entry)
+            if key in seen:
+                continue
+            seen.add(key)
+            recalled.append(entry)
+            if len(recalled) >= limit:
+                break
+
+        return recalled or entries
+
+    @staticmethod
+    def _table_schema_name(ds, table) -> str:
+        schema_name = getattr(table, "schemaName", None)
+        if schema_name is not None and str(schema_name).strip() != "":
+            return str(schema_name)
+        db_schema = getattr(ds, "db_schema", None)
+        if db_schema is not None and str(db_schema).strip() != "":
+            return str(db_schema)
+        database = getattr(ds, "dataBase", None)
+        if database is not None and str(database).strip() != "":
+            return str(database)
+        return ""
+
+    @staticmethod
+    def _qualified_table_name(schema_name: Optional[str], table_name: Optional[str]) -> str:
+        name = str(table_name or "")
+        schema = str(schema_name or "").strip()
+        return f"{schema}.{name}" if schema else name
+
+    @staticmethod
+    def _split_table_name(table_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        if not table_name:
+            return None, None
+        parts = [part.strip(' `"[]') for part in str(table_name).split(".") if part.strip(' `"[]')]
+        if len(parts) >= 2:
+            return parts[-2], parts[-1]
+        return None, parts[0] if parts else None
+
+    @staticmethod
+    def _datasource_not_found_payload(reason: str, message: str, candidates: Optional[list[dict[str, Any]]] = None):
+        return {
+            "type": "datasource_not_found",
+            "reason": reason,
+            "message": message,
+            "candidates": candidates or [],
+            "actions": [{"type": "record_question", "label": "录入需求"}],
+        }
+
+    @staticmethod
+    def _cross_source_payload(tables: list[dict[str, Any]]):
+        dedup: dict[str, dict[str, Any]] = {}
+        for table in tables:
+            key = f"{table.get('datasourceId')}::{str(table.get('schemaName', '')).lower()}::{str(table.get('name', '')).lower()}"
+            dedup[key] = {
+                "name": table.get("name"),
+                "schemaName": table.get("schemaName"),
+                "qualifiedName": table.get("qualifiedName"),
+                "tableId": table.get("tableId"),
+                "categoryId": table.get("categoryId"),
+                "datasourceId": table.get("datasourceId"),
+                "datasourceName": table.get("datasourceName"),
+                "datasourceType": table.get("datasourceType"),
+                "physicalDatasourceKey": table.get("physicalDatasourceKey"),
+                "host": table.get("host"),
+                "port": table.get("port"),
+            }
+        return {
+            "type": "cross_source_not_supported",
+            "message": "当前问题涉及多个数据源，暂不支持跨源联合查询，请拆分问题或联系数据管理员建模。",
+            "tables": list(dedup.values()),
+            "actions": [{"type": "split_question", "label": "拆分问题"}],
+        }
+
+    @staticmethod
+    def _match_logical_entries(
+        entries: list[dict[str, Any]], table_name: Optional[str], datasource_id: Optional[Any] = None,
+        schema_name: Optional[str] = None, table_id: Optional[Any] = None
+    ) -> list[dict[str, Any]]:
+        ds_id = str(datasource_id) if datasource_id is not None and datasource_id != "" else None
+        schema = str(schema_name or "").lower()
+        if table_id is not None and table_id != "":
+            return [
+                entry for entry in entries
+                if str(entry.get("tableId")) == str(table_id)
+                and (ds_id is None or str(entry.get("datasourceId")) == ds_id)
+                and (not schema or str(entry.get("schemaName", "")).lower() == schema)
+            ]
+        if not table_name:
+            return []
+        parsed_schema, parsed_name = LLMService._split_table_name(table_name)
+        name = str(parsed_name or table_name).lower()
+        schema = str(schema_name or parsed_schema or "").lower()
+        result = []
+        for entry in entries:
+            if str(entry.get("name", "")).lower() != name:
+                continue
+            if ds_id is not None and str(entry.get("datasourceId")) != ds_id:
+                continue
+            if schema and str(entry.get("schemaName", "")).lower() != schema:
+                continue
+            result.append(entry)
+        return result
+
+    def route_logical_datasource(self, _session: Session):
+        all_entries = self._logical_table_entries()
+        if not all_entries:
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "empty_available_table",
+                "No table metadata available for current user",
+            )).decode())
+        entries = self._recall_logical_table_entries(self.chat_question.question, all_entries)
+        SQLBotLogUtil.info(
+            f"Logical datasource route candidates: {len(entries)}/{len(all_entries)}"
+        )
+
+        route_msg: List[Union[BaseMessage, dict[str, Any]]] = [
+            SystemMessage(content=(
+                "你是 SQLBot 的表路由器。你的任务是从给定的全域数据表目录中，"
+                "选择与用户问题最相关且足以生成 SQL 的真实物理表。"
+                "只返回 JSON，不要输出解释。"
+                "若存在强相关表，返回："
+                "{\"success\":true,\"tables\":[{\"datasourceId\":数据源ID,\"schemaName\":\"schema\",\"name\":\"表名\",\"tableId\":表ID}]}。"
+                "若没有相关表，返回：{\"success\":false,\"message\":\"原因\"}。"
+                "可以选择多张表，但不要选择弱相关或仅名称相似的表。"
+                "如果目录中提供 schemaName/tableId，必须原样返回。"
+            )),
+            HumanMessage(content=orjson.dumps({
+                "question": self.chat_question.question,
+                "tables": entries,
+            }).decode()),
+        ]
+
+        self.current_logs[OperationEnum.CHOOSE_DATASOURCE] = start_log(
+            session=_session,
+            ai_modal_id=self.chat_question.ai_modal_id,
+            ai_modal_name=self.chat_question.ai_modal_name,
+            operate=OperationEnum.CHOOSE_DATASOURCE,
+            record_id=self.record.id,
+            full_message=[{"type": msg.type, "content": msg.content} for msg in route_msg],
+        )
+
+        full_thinking_text = ''
+        full_text = ''
+        token_usage = {}
+        res = process_stream(self.llm.stream(route_msg), token_usage)
+        for chunk in res:
+            if chunk.get('content'):
+                full_text += chunk.get('content')
+            if chunk.get('reasoning_content'):
+                full_thinking_text += chunk.get('reasoning_content')
+            yield chunk
+
+        route_msg.append(AIMessage(full_text))
+        self.current_logs[OperationEnum.CHOOSE_DATASOURCE] = end_log(
+            session=_session,
+            log=self.current_logs[OperationEnum.CHOOSE_DATASOURCE],
+            full_message=[{"type": msg.type, "content": msg.content} for msg in route_msg],
+            reasoning_content=full_thinking_text,
+            token_usage=token_usage,
+        )
+
+        json_str = extract_nested_json(full_text)
+        if json_str is None:
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "logical_route_parse_failed",
+                "Cannot parse table route from answer",
+            )).decode())
+
+        try:
+            data = orjson.loads(json_str)
+        except Exception:
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "logical_route_invalid_json",
+                "Cannot parse table route from answer",
+            )).decode())
+
+        if not data.get("success"):
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "no_relevant_table",
+                data.get("message") or "No relevant table found",
+                [{"name": item.get("name"), "datasourceId": item.get("datasourceId")} for item in entries[:20]],
+            )).decode())
+
+        selected: list[dict[str, Any]] = []
+        for item in data.get("tables") or []:
+            if not isinstance(item, dict):
+                continue
+            table_name = item.get("name") or item.get("tableName")
+            datasource_id = item.get("datasourceId") or item.get("datasource_id")
+            schema_name = item.get("schemaName") or item.get("schema") or item.get("db_schema")
+            table_id = item.get("tableId") or item.get("id")
+            matches = self._match_logical_entries(entries, table_name, datasource_id, schema_name, table_id)
+            if not matches and table_name:
+                matches = self._match_logical_entries(entries, table_name, datasource_id, schema_name)
+            if not matches and table_name:
+                matches = self._match_logical_entries(entries, table_name)
+            selected.extend(matches)
+
+        selected_map = {
+            f"{item.get('datasourceId')}::{str(item.get('schemaName', '')).lower()}::{str(item.get('name', '')).lower()}": item
+            for item in selected
+        }
+        selected = list(selected_map.values())
+        if not selected:
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "no_relevant_table",
+                "No relevant table found",
+            )).decode())
+
+        physical_keys = {
+            item.get("physicalDatasourceKey") or f"datasource:{item.get('datasourceId')}"
+            for item in selected
+        }
+        if len(physical_keys) > 1:
+            raise SingleMessageError(orjson.dumps(self._cross_source_payload(selected)).decode())
+
+        physical_key = next(iter(physical_keys))
+        datasource_id = selected[0].get("datasourceId")
+        ds = self._ensure_out_ds_instance().get_ds(datasource_id)
+        self.ds = ds
+        self.chat_question.engine = ds.type + get_version(self.ds)
+        self.logical_route_tables = selected
+        self.logical_route_physical_datasource_key = physical_key
+        self.logical_route_table_names = [str(item.get("qualifiedName") or item.get("name")) for item in selected if item.get("name")]
+        self.logical_route_table_refs = [
+            {
+                "name": item.get("name"),
+                "schemaName": item.get("schemaName"),
+                "tableId": item.get("tableId"),
+                "categoryId": item.get("categoryId"),
+                "datasourceId": item.get("datasourceId"),
+            }
+            for item in selected
+        ]
+
+        self.record = save_select_datasource_answer(
+            session=_session,
+            record_id=self.record.id,
+            answer=orjson.dumps({"content": full_text}).decode(),
+            datasource=ds.id,
+            engine_type=self.chat_question.engine,
+        )
+
+        oid = 1
+        self.filter_terminology_template(_session, oid, None)
+        self.filter_training_template(_session, oid, None)
+        self.filter_custom_prompts(_session, CustomPromptTypeEnum.GENERATE_SQL, oid, None)
+        self.init_messages(_session)
+
+    def _current_datasource_entries(self) -> list[dict[str, Any]]:
+        if not self.ds:
+            return []
+        ds_list = [self.ds]
+        route_physical_key = self.logical_route_physical_datasource_key
+        if self._logical_datasource_enabled() and route_physical_key and self.out_ds_instance:
+            ds_list = self.out_ds_instance.get_physical_group_ds(self.ds, route_physical_key)
+        entries: list[dict[str, Any]] = []
+        for ds_item in ds_list:
+            physical_key = AssistantOutDs._physical_datasource_key(ds_item)
+            for table in (getattr(ds_item, "tables", None) or []):
+                table_name = str(getattr(table, "name", "") or "")
+                schema_name = self._table_schema_name(ds_item, table)
+                table_id = getattr(table, "tableId", None) or getattr(table, "id", None)
+                entries.append({
+                    "datasourceId": getattr(ds_item, "id", None),
+                    "datasourceName": getattr(ds_item, "name", None),
+                    "datasourceType": getattr(ds_item, "type", None),
+                    "physicalDatasourceKey": physical_key,
+                    "host": getattr(ds_item, "host", None),
+                    "port": getattr(ds_item, "port", None),
+                    "schemaName": schema_name,
+                    "name": table_name,
+                    "qualifiedName": self._qualified_table_name(schema_name, table_name),
+                    "tableId": table_id,
+                    "categoryId": getattr(table, "categoryId", None),
+                })
+        return entries
+
+    def _normalize_table_input(self, item: Any) -> dict[str, Any]:
+        if isinstance(item, SQLTableRef):
+            return {"name": item.name, "schemaName": item.schema}
+        if isinstance(item, dict):
+            return {
+                "name": item.get("name") or item.get("tableName"),
+                "schemaName": item.get("schemaName") or item.get("schema") or item.get("db_schema"),
+                "tableId": item.get("tableId") or item.get("id"),
+                "categoryId": item.get("categoryId"),
+                "datasourceId": item.get("datasourceId") or item.get("datasource_id"),
+            }
+        schema_name, table_name = self._split_table_name(str(item)) if item is not None else (None, None)
+        return {"name": table_name, "schemaName": schema_name}
+
+    @staticmethod
+    def _permission_ref_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "name": entry.get("name"),
+            "schemaName": entry.get("schemaName"),
+            "tableId": entry.get("tableId"),
+            "categoryId": entry.get("categoryId"),
+        }
+
+    def _resolve_table_inputs(
+        self, inputs: list[Any]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        current_entries = self._current_datasource_entries()
+        route_entries = self.logical_route_tables or []
+        resolved: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+
+        for item in inputs:
+            ref = self._normalize_table_input(item)
+            table_id = ref.get("tableId")
+            table_name = ref.get("name")
+            schema_name = ref.get("schemaName")
+            datasource_id = ref.get("datasourceId")
+
+            matches: list[dict[str, Any]] = []
+            schema = str(schema_name or "").lower()
+            ds_id = str(datasource_id) if datasource_id is not None and datasource_id != "" else None
+            if table_id is not None and table_id != "":
+                matches = [
+                    entry for entry in current_entries
+                    if str(entry.get("tableId")) == str(table_id)
+                    and (not schema or str(entry.get("schemaName", "")).lower() == schema)
+                    and (ds_id is None or str(entry.get("datasourceId")) == ds_id)
+                ]
+
+            if not matches and table_name:
+                name = str(table_name).lower()
+                matches = [
+                    entry for entry in current_entries
+                    if str(entry.get("name", "")).lower() == name
+                    and (not schema or str(entry.get("schemaName", "")).lower() == schema)
+                    and (ds_id is None or str(entry.get("datasourceId")) == ds_id)
+                ]
+
+            if len(matches) > 1 and not schema_name:
+                route_matches = [
+                    entry for entry in route_entries
+                    if str(entry.get("name", "")).lower() == str(table_name or "").lower()
+                ]
+                if len(route_matches) == 1:
+                    matches = route_matches
+
+            if len(matches) == 1:
+                resolved.append(matches[0])
+            elif len(matches) > 1:
+                unresolved.append({**ref, "reason": "ambiguous_table_reference"})
+            else:
+                unresolved.append({**ref, "reason": "table_not_in_current_datasource"})
+
+        dedup: dict[str, dict[str, Any]] = {}
+        for entry in resolved:
+            key = f"{entry.get('datasourceId')}::{entry.get('schemaName')}::{str(entry.get('name', '')).lower()}::{entry.get('tableId')}"
+            dedup[key] = entry
+        return list(dedup.values()), unresolved
+
+    def _validate_logical_sql_route(self, sql: str, llm_tables: Optional[list]):
+        if not self._logical_datasource_enabled() or not self.ds:
+            return
+        dialect = getattr(self.ds, "type", None) or None
+        parser_refs = extract_table_refs(sql, dialect=dialect)
+        if parser_refs is None:
+            raise SingleMessageError(orjson.dumps({
+                "type": "cross_source_not_supported",
+                "reason": "sql_parse_failed",
+                "message": "无法解析生成的 SQL，已阻止执行以避免跨源或越权查询。",
+                "tables": [],
+                "actions": [{"type": "split_question", "label": "拆分问题"}],
+            }).decode())
+
+        inputs = list(parser_refs)
+        if not inputs and llm_tables:
+            inputs.extend(llm_tables)
+        if not inputs:
+            return
+
+        resolved, unresolved = self._resolve_table_inputs(inputs)
+        if not unresolved:
+            return
+
+        entries = self._logical_table_entries()
+        matched_other: list[dict[str, Any]] = []
+        current_physical_key = self.logical_route_physical_datasource_key or AssistantOutDs._physical_datasource_key(self.ds)
+        for item in unresolved:
+            matches = self._match_logical_entries(
+                entries,
+                item.get("name"),
+                schema_name=item.get("schemaName"),
+                table_id=item.get("tableId"),
+            )
+            matched_other.extend([
+                match for match in matches
+                if str(match.get("physicalDatasourceKey") or f"datasource:{match.get('datasourceId')}") != str(current_physical_key)
+            ])
+        if matched_other:
+            raise SingleMessageError(orjson.dumps(self._cross_source_payload(resolved + matched_other)).decode())
+
+        raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+            "generated_table_not_in_current_datasource",
+            "Generated SQL contains tables outside routed datasource",
+            unresolved,
+        )).decode())
 
     def generate_sql(self, _session: Session):
         # append current question
@@ -1128,7 +1718,8 @@ class LLMService:
 
                 # select datasource if datasource is none
             if not self.ds:
-                ds_res = self.select_datasource(_session)
+                logical_ds_mode = self._logical_datasource_enabled()
+                ds_res = self.route_logical_datasource(_session) if logical_ds_mode else self.select_datasource(_session)
 
                 for chunk in ds_res:
                     SQLBotLogUtil.info(chunk)
@@ -1136,7 +1727,7 @@ class LLMService:
                         yield 'data:' + orjson.dumps(
                             {'content': chunk.get('content'), 'reasoning_content': chunk.get('reasoning_content'),
                              'type': 'datasource-result'}).decode() + '\n\n'
-                if in_chat:
+                if in_chat and not logical_ds_mode:
                     yield 'data:' + orjson.dumps({'id': self.ds.id, 'datasource_name': self.ds.name,
                                                   'engine_type': self.ds.type_name or self.ds.type,
                                                   'type': 'datasource'}).decode() + '\n\n'
@@ -1189,6 +1780,7 @@ class LLMService:
 
             sql_operate = OperationEnum.GENERATE_SQL
             sql, tables = self.check_sql(session=_session, res=full_sql_text, operate=sql_operate)
+            self._validate_logical_sql_route(sql, tables)
 
             # ===== 主线二 Phase 3a：Gate 1 表级权限校验 =====
             # 拿到 LLM 第一版 SQL 与 tables 后立即校验，主校验，覆盖 90% 场景。
@@ -1244,6 +1836,7 @@ class LLMService:
                     assistant_dynamic_sql = assistant_dynamic_sql.replace(f'{dynamic_subsql_prefix}{origin_table}',
                                                                           subsql)
                 real_execute_sql = assistant_dynamic_sql
+            self._validate_logical_sql_route(real_execute_sql, None)
 
             if finish_step.value <= ChatFinishStep.GENERATE_SQL.value:
                 if in_chat:
@@ -1643,28 +2236,81 @@ class LLMService:
         if self.ds is not None:
             dialect = getattr(self.ds, "type", None) or None
 
-        parser_tables = extract_table_names(sql, dialect=dialect)
-        if parser_tables is None:
+        parser_refs = extract_table_refs(sql, dialect=dialect)
+        if parser_refs is None:
             # parse 失败：fail-closed 拒绝，避免越权
             SQLBotLogUtil.warning(f"[{gate_label}] SQL parser failed, deny by default")
             return PermissionCheckResult(allowed=False, reason="sql_parse_failed")
 
-        merged = merge_tables(llm_tables, parser_tables)
-        if not merged:
+        inputs = list(parser_refs)
+        if not inputs and llm_tables:
+            inputs.extend(llm_tables)
+        if not inputs:
             # SQL 不涉及任何表（如纯 SELECT 1），放行
             return PermissionCheckResult(allowed=True, raw_payload={"empty_tables": True})
 
-        ds_id = getattr(self.ds, "id", None) if self.ds is not None else None
+        resolved, unresolved = self._resolve_table_inputs(inputs)
+        if unresolved:
+            denied = [
+                DeniedTable(
+                    name=str(item.get("name") or ""),
+                    schema_name=item.get("schemaName"),
+                    table_id=item.get("tableId"),
+                    category_id=item.get("categoryId"),
+                    reason=item.get("reason") or "table_not_registered_or_ambiguous",
+                )
+                for item in unresolved
+            ]
+            return PermissionCheckResult(
+                allowed=False,
+                reason="table_not_registered_or_ambiguous",
+                denied_tables=denied,
+                datasource_id=str(getattr(self.ds, "id", "")) if self.ds is not None else None,
+            )
+
         tenant_id = getattr(self.current_user, "oid", None) if self.current_user else None
-        return check_table_permissions(
-            authorization_header=self._extract_authorization_header(),
-            tenant_id=tenant_id,
-            datasource_id=ds_id,
-            sql=sql,
-            tables=sorted(merged),
-            chat_id=getattr(self.record, "chat_id", None) if self.record else None,
-            record_id=getattr(self.record, "id", None) if self.record else None,
-        )
+        default_ds_id = getattr(self.ds, "id", None) if self.ds is not None else None
+        grouped_refs: dict[str, list[dict[str, Any]]] = {}
+        for entry in resolved:
+            ds_id = entry.get("datasourceId") or default_ds_id
+            grouped_refs.setdefault(str(ds_id), []).append(self._permission_ref_from_entry(entry))
+
+        denied_tables: list[DeniedTable] = []
+        group_results: list[dict[str, Any]] = []
+        first_denied_reason: Optional[str] = None
+        first_denied_datasource_id: Optional[str] = None
+        for ds_id, table_refs in grouped_refs.items():
+            result = check_table_permissions(
+                authorization_header=self._extract_authorization_header(),
+                tenant_id=tenant_id,
+                datasource_id=ds_id,
+                sql=sql,
+                tables=table_refs,
+                chat_id=getattr(self.record, "chat_id", None) if self.record else None,
+                record_id=getattr(self.record, "id", None) if self.record else None,
+            )
+            group_results.append({
+                "datasourceId": ds_id,
+                "allowed": result.allowed,
+                "reason": result.reason,
+                "raw": result.raw_payload,
+            })
+            if not result.allowed:
+                denied_tables.extend(result.denied_tables)
+                if first_denied_reason is None:
+                    first_denied_reason = result.reason or "user_lacks_table_permission"
+                    first_denied_datasource_id = result.datasource_id or str(ds_id)
+
+        if first_denied_reason is not None:
+            return PermissionCheckResult(
+                allowed=False,
+                denied_tables=denied_tables,
+                reason=first_denied_reason,
+                datasource_id=first_denied_datasource_id,
+                raw_payload={"groups": group_results},
+            )
+
+        return PermissionCheckResult(allowed=True, raw_payload={"groups": group_results})
 
 
 def execute_sql_with_db(db: SQLDatabase, sql: str) -> str:

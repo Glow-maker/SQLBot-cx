@@ -70,6 +70,11 @@ def _fixed_datasource() -> dict:
         "db_schema": "public",
         "tables": [
             {
+                "id": 1001,
+                "tableId": 1001,
+                "categoryId": 2001,
+                "dataSourceId": 9001,
+                "schemaName": "sales",
                 "name": "orders",
                 "comment": "订单主表",
                 "fields": [
@@ -80,6 +85,11 @@ def _fixed_datasource() -> dict:
                 ],
             },
             {
+                "id": 1002,
+                "tableId": 1002,
+                "categoryId": 2002,
+                "dataSourceId": 9001,
+                "schemaName": "crm",
                 "name": "users",
                 "comment": "用户表",
                 "fields": [
@@ -90,6 +100,71 @@ def _fixed_datasource() -> dict:
             },
         ],
     }
+
+
+def _fixed_mysql_datasources() -> list[dict]:
+    return [
+        {
+            "id": 3,
+            "name": "dataease",
+            "type": "mysql",
+            "type_name": "mysql",
+            "description": "mock dataease schema",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "dataBase": "dataease",
+            "user": "root",
+            "password": "Password123@mysql",
+            "db_schema": "dataease",
+            "tables": [
+                {
+                    "id": 3001,
+                    "tableId": 3001,
+                    "categoryId": 5001,
+                    "dataSourceId": 3,
+                    "schemaName": "dataease",
+                    "name": "dmgt_category",
+                    "comment": "目录扩展表",
+                    "fields": [
+                        {"name": "id", "type": "bigint", "comment": "主键"},
+                        {"name": "name", "type": "varchar", "comment": "目录名称"},
+                    ],
+                },
+            ],
+        },
+        {
+            "id": 5,
+            "name": "jtest",
+            "type": "mysql",
+            "type_name": "mysql",
+            "description": "mock jtest schema",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "dataBase": "jtest",
+            "user": "root",
+            "password": "Password123@mysql",
+            "db_schema": "jtest",
+            "tables": [
+                {
+                    "id": 5001,
+                    "tableId": 5001,
+                    "categoryId": 5005,
+                    "dataSourceId": 5,
+                    "schemaName": "jtest",
+                    "name": "test_orders",
+                    "comment": "测试订单表",
+                    "fields": [
+                        {"name": "id", "type": "bigint", "comment": "主键"},
+                        {"name": "category_id", "type": "bigint", "comment": "目录 ID"},
+                    ],
+                },
+            ],
+        },
+    ]
+
+
+def _fixed_datasources() -> list[dict]:
+    return [_fixed_datasource(), *_fixed_mysql_datasources()]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -125,8 +200,9 @@ class Handler(BaseHTTPRequestHandler):
                 log.info("ds query -> 500 (forced)")
                 self._send_json(500, {"code": 500, "message": "mock forced failure"})
                 return
-            log.info("ds query -> 200 (1 ds)")
-            self._send_json(200, {"code": 0, "data": [_fixed_datasource()]})
+            datasources = _fixed_datasources()
+            log.info("ds query -> 200 (%s ds)", len(datasources))
+            self._send_json(200, {"code": 0, "data": datasources})
             return
         # 主线一：tenant-id by name（中台 OAuth2 登录前置查询）
         if self.path.startswith("/admin-api/system/tenant/get-id-by-name"):
@@ -150,7 +226,8 @@ class Handler(BaseHTTPRequestHandler):
         query_flat = {k: v[0] for k, v in qs.items() if v}
 
         body = self._read_body()
-        tables_in = [t.get("name") if isinstance(t, dict) else t for t in (body.get("tables") or [])]
+        table_refs = body.get("tables") or []
+        tables_in = [t.get("name") if isinstance(t, dict) else t for t in table_refs]
         mode = _mode(query_flat)
         log.info("perm check tables=%s mode=%s", tables_in, mode)
 
@@ -175,10 +252,14 @@ class Handler(BaseHTTPRequestHandler):
                     "name": t,
                     "displayName": f"{t} 表",
                     "catalogPath": f"sales/{t}",
+                    "tableId": 1000 + idx,
+                    "categoryId": 2000 + idx,
+                    "schemaName": (table_refs[idx - 1].get("schemaName") if isinstance(table_refs[idx - 1], dict) else None),
+                    "categoryName": f"{t} 目录",
                     "reason": "no permission",
-                    "applyUrl": f"http://platform.local/apply?table={t}",
+                    "applyUrl": f"http://platform.local/dataresource/l4detail?id={2000 + idx}&from=sqlbot",
                 }
-                for t in tables_in
+                for idx, t in enumerate(tables_in, start=1)
                 if t in deny_set
             ]
             allowed_flag = len(denied) == 0

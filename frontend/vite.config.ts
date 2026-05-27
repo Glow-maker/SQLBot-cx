@@ -65,6 +65,12 @@ export default defineConfig(({ mode }: any): any => {
       headers: {
         'Access-Control-Allow-Origin': '*',
       },
+      proxy: {
+        '/admin-api': {
+          target: env.VITE_PLATFORM_BASE_URL || 'http://127.0.0.1:38080',
+          changeOrigin: true,
+        },
+      },
     },
   }
 })

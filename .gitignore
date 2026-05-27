@@ -64,6 +64,14 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Runtime logs
+logs/
+backend/logs/
+
+# Runtime database/data files
+backend/data/
+data/
+backup/
 # Translations
 *.mo
 *.pot

@@ -12,7 +12,7 @@
 返回结构与需求文档对齐：
 {
   "allowed": bool,
-  "deniedTables": [{"name", "displayName", "catalogPath", "reason", "applyUrl"}],
+  "deniedTables": [{"name", "displayName", "catalogPath", "tableId", "categoryId", "schemaName", "categoryName", "reason", "applyUrl"}],
   "allowedTables": [{"name", "displayName", "catalogPath"}],
   "datasourceId": str
 }
@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -34,6 +34,10 @@ class DeniedTable:
     name: str
     display_name: Optional[str] = None
     catalog_path: Optional[str] = None
+    table_id: Optional[int | str] = None
+    category_id: Optional[int | str] = None
+    schema_name: Optional[str] = None
+    category_name: Optional[str] = None
     reason: Optional[str] = None
     apply_url: Optional[str] = None
 
@@ -61,7 +65,7 @@ def check_table_permissions(
     tenant_id: Optional[str | int],
     datasource_id: Optional[str | int],
     sql: str,
-    tables: list[str],
+    tables: list[str | dict[str, Any]],
     chat_id: Optional[int] = None,
     record_id: Optional[int] = None,
     timeout: Optional[float] = None,
@@ -96,10 +100,21 @@ def check_table_permissions(
     if tenant_id is not None:
         headers[settings.PLATFORM_AUTH_TENANT_ID_HEADER] = str(tenant_id)
 
+    table_refs = []
+    for item in tables:
+        if isinstance(item, dict):
+            table_refs.append({
+                key: value
+                for key, value in item.items()
+                if value is not None and value != ""
+            })
+        else:
+            table_refs.append({"name": item})
+
     body = {
         "datasourceId": datasource_id,
         "sql": sql,
-        "tables": [{"name": t} for t in tables],
+        "tables": table_refs,
     }
     if chat_id is not None:
         body["chatId"] = chat_id
@@ -149,6 +164,10 @@ def check_table_permissions(
             name=str(item.get("name", "")),
             display_name=item.get("displayName"),
             catalog_path=item.get("catalogPath"),
+            table_id=item.get("tableId"),
+            category_id=item.get("categoryId"),
+            schema_name=item.get("schemaName"),
+            category_name=item.get("categoryName"),
             reason=item.get("reason"),
             apply_url=item.get("applyUrl"),
         )
@@ -178,6 +197,10 @@ def denied_tables_to_sse_payload(result: PermissionCheckResult, gate_label: str)
                 "name": t.name,
                 "displayName": t.display_name,
                 "catalogPath": t.catalog_path,
+                "tableId": t.table_id,
+                "categoryId": t.category_id,
+                "schemaName": t.schema_name,
+                "categoryName": t.category_name,
                 "reason": t.reason,
                 "applyUrl": t.apply_url,
             }

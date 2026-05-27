@@ -15,12 +15,31 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Iterable, Optional
 
 import sqlglot
 from sqlglot import exp
 
 from common.utils.utils import SQLBotLogUtil
+
+
+@dataclass(frozen=True)
+class SQLTableRef:
+    name: str
+    schema: Optional[str] = None
+    catalog: Optional[str] = None
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.schema}.{self.name}" if self.schema else self.name
+
+
+def _identifier_text(value) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 def extract_table_names(sql: str, dialect: Optional[str] = None) -> Optional[set[str]]:
@@ -38,6 +57,16 @@ def extract_table_names(sql: str, dialect: Optional[str] = None) -> Optional[set
         extract_table_names("WITH t AS (SELECT * FROM orders) SELECT * FROM t")
         → {"orders"}  （t 是 CTE 别名，不计入）
     """
+    refs = extract_table_refs(sql, dialect=dialect)
+    if refs is None:
+        return None
+    return {ref.name for ref in refs}
+
+
+def extract_table_refs(sql: str, dialect: Optional[str] = None) -> Optional[set[SQLTableRef]]:
+    """
+    从 SQL 中提取真实物理表引用，保留 schema.table 信息。
+    """
     if not sql or not sql.strip():
         return set()
     try:
@@ -54,7 +83,7 @@ def extract_table_names(sql: str, dialect: Optional[str] = None) -> Optional[set
             SQLBotLogUtil.warning(f"SQL parse fallback also failed: {exc2}")
             return None
 
-    table_names: set[str] = set()
+    table_refs: set[SQLTableRef] = set()
     cte_aliases: set[str] = set()
 
     for stmt in parsed_list:
@@ -72,9 +101,13 @@ def extract_table_names(sql: str, dialect: Optional[str] = None) -> Optional[set
                 continue
             if str(name).lower() in cte_aliases:
                 continue
-            table_names.add(str(name))
+            table_refs.add(SQLTableRef(
+                name=str(name),
+                schema=_identifier_text(table.db),
+                catalog=_identifier_text(table.catalog),
+            ))
 
-    return table_names
+    return table_refs
 
 
 def merge_tables(*sources: Iterable[str] | None) -> set[str]:

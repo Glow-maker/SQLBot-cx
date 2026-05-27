@@ -87,7 +87,7 @@ def _ensure_mock_running():
 # Group 1: sql_parser
 # =====================================================================
 def test_sql_parser():
-    from common.utils.sql_parser import extract_table_names, merge_tables
+    from common.utils.sql_parser import extract_table_names, extract_table_refs, merge_tables
     g = "1. sql_parser（双 Gate 表名解析）"
 
     cases = [
@@ -111,6 +111,14 @@ def test_sql_parser():
     case("sql_parser/merge_dedupe",
          "({'orders'}, ['users','orders'], None, [])", {"orders", "users"},
          actual, actual == {"orders", "users"}, g)
+
+    refs = extract_table_refs("SELECT * FROM sales.orders o JOIN crm.users u ON o.user_id=u.id")
+    actual_refs = {(r.schema, r.name) for r in refs or []}
+    case("sql_parser/schema_refs",
+         "SELECT * FROM sales.orders JOIN crm.users",
+         "{('sales','orders'), ('crm','users')}",
+         actual_refs,
+         actual_refs == {("sales", "orders"), ("crm", "users")}, g)
 
 
 # =====================================================================
@@ -152,10 +160,33 @@ def test_out_ds_factory():
          inst1 is inst1b, g)
 
     case("factory/ds_list_loaded",
-         "mock 返回 1 个固定 ds",
+         "mock 返回固定 ds 列表",
          "ds_list 长度 ≥ 1",
          f"len={len(inst1.ds_list) if inst1.ds_list else 0}",
          isinstance(inst1.ds_list, list) and len(inst1.ds_list) >= 1, g)
+
+    mysql_group = [ds for ds in (inst1.ds_list or []) if getattr(ds, "type", None) == "mysql"]
+    mysql_keys = {getattr(ds, "physicalDatasourceKey", None) for ds in mysql_group}
+    case("factory/physical_key_groups_same_host_port",
+         "mock 返回 dataease(id=3) + jtest(id=5)，同 type/host/port",
+         "{'mysql|127.0.0.1|3306'}",
+         mysql_keys,
+         mysql_keys == {"mysql|127.0.0.1|3306"}, g)
+
+    schema_text = inst1.get_db_schema(
+        3,
+        table_list=[
+            {"datasourceId": 3, "schemaName": "dataease", "name": "dmgt_category", "tableId": 3001},
+            {"datasourceId": 5, "schemaName": "jtest", "name": "test_orders", "tableId": 5001},
+        ],
+        physical_datasource_key="mysql|127.0.0.1|3306",
+    )
+    schema_ok = "dataease.dmgt_category" in schema_text and "jtest.test_orders" in schema_text
+    case("factory/schema_context_same_physical_source",
+         "get_db_schema(ds_id=3, physical_datasource_key=mysql|127.0.0.1|3306)",
+         "M-Schema 同时包含 dataease.dmgt_category 和 jtest.test_orders",
+         schema_text,
+         schema_ok, g)
 
     a2 = _build_virtual_assistant("Bearer bbb", 124)
     inst2 = AssistantOutDsFactory.get_instance(a2)
@@ -226,7 +257,10 @@ def test_permission_client():
     _force_settings_for_perm(enabled=True, mode="deny")
     r = check_table_permissions(
         authorization_header="Bearer x", tenant_id=124, datasource_id="ds_mock_sales",
-        sql="SELECT * FROM orders", tables=["orders", "users"],
+        sql="SELECT * FROM sales.orders", tables=[
+            {"name": "orders", "schemaName": "sales", "tableId": 1001, "categoryId": 2001},
+            {"name": "users", "schemaName": "crm", "tableId": 1002, "categoryId": 2002},
+        ],
     )
     case("perm/deny_returns_denied_tables",
          "tables=['orders','users'], mock mode=deny（默认拒 orders/payments）",
@@ -240,11 +274,14 @@ def test_permission_client():
         and sse.get("gate") == "gate1"
         and isinstance(sse.get("deniedTables"), list)
         and any(t.get("applyUrl", "").startswith("http") for t in sse["deniedTables"])
+        and any(t.get("categoryId") is not None for t in sse["deniedTables"])
+        and any(t.get("tableId") is not None for t in sse["deniedTables"])
+        and any(t.get("schemaName") == "sales" for t in sse["deniedTables"])
         and any(a.get("type") == "permission_apply" for a in sse.get("actions", []))
     )
     case("perm/sse_payload_shape",
          "上一个 deny 结果, gate_label='gate1'",
-         "type='permission_denied', gate='gate1', deniedTables 含 applyUrl, actions 含 'permission_apply'",
+         "type='permission_denied', gate='gate1', deniedTables 含 applyUrl/categoryId/tableId, actions 含 'permission_apply'",
          f"type={sse.get('type')}, gate={sse.get('gate')}, denied_count={len(sse.get('deniedTables', []))}",
          sse_ok, g)
 
@@ -291,6 +328,151 @@ def test_permission_client():
          "tables=[]（解析不到表）",
          "allowed=True（无可校验对象，直接放行）",
          f"allowed={r.allowed}", r.allowed, g)
+
+
+def test_logical_permission_grouping():
+    from apps.chat.task import llm as llm_mod
+    from apps.chat.task.llm import LLMService
+    from apps.system.crud.assistant import AssistantOutDsFactory
+    from common.core.config import settings
+    from common.utils.platform_permission import PermissionCheckResult
+
+    g = "4. 统一逻辑 datasource（同物理源跨 schema）"
+
+    settings.PLATFORM_DATASOURCE_ENABLED = True
+    settings.PLATFORM_LOGICAL_DATASOURCE_ENABLED = True
+    settings.PLATFORM_DATASOURCE_BASE_URL = MOCK_BASE
+    settings.PLATFORM_PERMISSION_CHECK_PATH = "/openapi/sqlbot/table-permissions/check?mode=allow"
+
+    assistant = _build_virtual_assistant("Bearer grouping", 124)
+    out_ds = AssistantOutDsFactory.get_instance(assistant)
+
+    service = LLMService.__new__(LLMService)
+    service.ds = out_ds.get_ds(3)
+    service.out_ds_instance = out_ds
+    service.current_assistant = assistant
+    service.current_user = type("U", (), {"oid": 124})()
+    service.record = type("R", (), {"chat_id": 1, "id": 2})()
+    service.logical_route_physical_datasource_key = "mysql|127.0.0.1|3306"
+    service.logical_route_tables = []
+
+    calls: list[dict[str, Any]] = []
+    old_check = llm_mod.check_table_permissions
+
+    def fake_check_table_permissions(**kwargs):
+        calls.append(kwargs)
+        return PermissionCheckResult(
+            allowed=True,
+            datasource_id=str(kwargs.get("datasource_id")),
+            raw_payload={"allowed": True, "datasourceId": kwargs.get("datasource_id")},
+        )
+
+    llm_mod.check_table_permissions = fake_check_table_permissions
+    try:
+        result = service._do_permission_check(
+            "SELECT c.id, o.id FROM dataease.dmgt_category c JOIN jtest.test_orders o ON c.id = o.category_id",
+            None,
+            "gate_test",
+        )
+    finally:
+        llm_mod.check_table_permissions = old_check
+
+    called_ds_ids = [str(call.get("datasource_id")) for call in calls]
+    called_tables = [
+        (str(call.get("datasource_id")), [t.get("schemaName") for t in call.get("tables", [])])
+        for call in calls
+    ]
+    case("logical_perm/groups_by_real_datasource",
+         "同物理源 SQL 涉及 dataease.dmgt_category + jtest.test_orders",
+         "分别按 datasourceId=3 和 datasourceId=5 调权限接口",
+         called_tables,
+         result is not None and result.allowed and set(called_ds_ids) == {"3", "5"}, g)
+
+
+def test_logical_route_recall():
+    from apps.chat.task import llm as llm_mod
+    from apps.chat.task.llm import LLMService
+    from common.core.config import settings
+
+    g = "5. 统一逻辑 datasource（候选表召回）"
+
+    old_enabled = getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED", None)
+    old_count = getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_COUNT", None)
+    old_keyword_count = getattr(settings, "PLATFORM_LOGICAL_ROUTE_KEYWORD_COUNT", None)
+    old_embedding = getattr(settings, "PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED", None)
+
+    entries: list[dict[str, Any]] = []
+    for idx in range(120):
+        entries.append({
+            "datasourceId": 3,
+            "datasourceName": "dataease",
+            "datasourceType": "mysql",
+            "physicalDatasourceKey": "mysql|127.0.0.1|3306",
+            "schemaName": "dataease",
+            "name": f"noise_table_{idx}",
+            "qualifiedName": f"dataease.noise_table_{idx}",
+            "comment": "无关测试表",
+            "fields": [{"name": "id", "type": "bigint", "comment": "主键"}],
+        })
+    entries.append({
+        "datasourceId": 5,
+        "datasourceName": "jtest",
+        "datasourceType": "mysql",
+        "physicalDatasourceKey": "mysql|127.0.0.1|3306",
+        "schemaName": "jtest",
+        "name": "purchase_apply",
+        "qualifiedName": "jtest.purchase_apply",
+        "comment": "采购申请主表",
+        "fields": [{"name": "amount", "type": "numeric", "comment": "采购金额"}],
+    })
+
+    service = LLMService.__new__(LLMService)
+    try:
+        settings.PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED = True
+        settings.PLATFORM_LOGICAL_ROUTE_RECALL_COUNT = 50
+        settings.PLATFORM_LOGICAL_ROUTE_KEYWORD_COUNT = 30
+        settings.PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED = False
+
+        recalled = service._recall_logical_table_entries("统计采购申请金额", entries)
+        names = [item.get("name") for item in recalled]
+        case("logical_recall/keyword_hit_kept",
+             "question='统计采购申请金额', entries=120+1",
+             "purchase_apply 必须进入候选集",
+             names[:10],
+             "purchase_apply" in names, g)
+
+        case("logical_recall/count_limited",
+             "PLATFORM_LOGICAL_ROUTE_RECALL_COUNT=50",
+             "候选数量 <= 50",
+             f"count={len(recalled)}",
+             len(recalled) <= 50, g)
+
+        settings.PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED = True
+        old_get_model = llm_mod.EmbeddingModelCache.get_model
+
+        def fake_get_model(*_args, **_kwargs):
+            raise RuntimeError("mock embedding unavailable")
+
+        llm_mod.EmbeddingModelCache.get_model = fake_get_model
+        try:
+            recalled_after_error = service._recall_logical_table_entries("统计采购申请金额", entries)
+        finally:
+            llm_mod.EmbeddingModelCache.get_model = old_get_model
+
+        case("logical_recall/embedding_error_fallback",
+             "embedding get_model 抛异常",
+             "不阻断问数，仍返回关键词候选或全量回退",
+             f"count={len(recalled_after_error)}",
+             len(recalled_after_error) > 0 and any(item.get("name") == "purchase_apply" for item in recalled_after_error), g)
+    finally:
+        if old_enabled is not None:
+            settings.PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED = old_enabled
+        if old_count is not None:
+            settings.PLATFORM_LOGICAL_ROUTE_RECALL_COUNT = old_count
+        if old_keyword_count is not None:
+            settings.PLATFORM_LOGICAL_ROUTE_KEYWORD_COUNT = old_keyword_count
+        if old_embedding is not None:
+            settings.PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED = old_embedding
 
 
 # =====================================================================
@@ -429,8 +611,11 @@ Response 200 - 有拒绝:
           "name":        "orders",
           "displayName": "订单表",
           "catalogPath": "sales/orders",
+          "tableId":     1001,
+          "categoryId":  2001,
+          "categoryName": "orders 目录",
           "reason":      "no permission",
-          "applyUrl":    "http://platform.local/apply?table=orders"
+          "applyUrl":    "http://platform.local/dataresource/l4detail?id=2001&from=sqlbot"
         }
       ],
       "datasourceId": <id>
@@ -442,7 +627,7 @@ Response 200 - 有拒绝:
 - Gate 1：`generate_sql` 后立即调用（防 LLM 选了无权表）
 - Gate 2：`execute_sql` 前再调一次（防 generate_filter / 动态 SQL 改写引入新表）
 
-任一返回 `allowed=false` → SQLBot 通过 SSE 推 `permission_denied` 事件 + applyUrl，前端引导用户申请权限。
+任一返回 `allowed=false` → SQLBot 通过 SSE 推 `permission_denied` 事件，并透传 `tableId/categoryId/categoryName/applyUrl`，前端引导用户申请权限。
 
 ### 5.3 权限申请（可选，Phase 3c）
 
@@ -451,7 +636,7 @@ POST /openapi/sqlbot/permission-applies
 Body: { "tables": [...], "chatId": ..., "reason": "..." }
 ```
 
-让用户点 SSE 中 actions[0] 时直接提交申请。如果中台已有内部 portal，可以仅提供 `applyUrl` 让前端跳转，不必新开接口。
+让用户点 SSE 中 actions[0] 时直接提交申请。如果 SQLBot 以 qiankun 子应用运行，应优先用 `categoryId` 作为 `resourceIds` 通知中台容器打开申请弹窗；独立运行时可以使用 `applyUrl` 兜底跳转。
 
 ### 5.4 未匹配问题记录（可选，Phase 3c）
 
@@ -548,7 +733,7 @@ def write_markdown_report():
 def main():
     _ensure_mock_running()
     print(f"== verify Phase 2a/3a against mock at {MOCK_BASE} ==")
-    for fn in (test_sql_parser, test_out_ds_factory, test_permission_client, test_virtual_assistant_shape):
+    for fn in (test_sql_parser, test_out_ds_factory, test_permission_client, test_logical_permission_grouping, test_logical_route_recall, test_virtual_assistant_shape):
         try:
             fn()
         except Exception as e:

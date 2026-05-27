@@ -7,5 +7,6 @@
 $env:HF_HUB_OFFLINE = "1"
 $env:TRANSFORMERS_OFFLINE = "1"
 $env:HF_HOME = "H:\opt\sqlbot\models\base\hub"
+$Python = "D:\Anaconda3\envs\sqlbot\python.exe"
 
-python -m uvicorn main:app --host 0.0.0.0 --port 8011 --workers 1
+& $Python -m uvicorn main:app --host 0.0.0.0 --port 8011 --workers 1
