@@ -1,0 +1,21 @@
+services:
+  sqlbot-backend:
+    image: sqlbot-cx-backend-host:latest
+    container_name: sqlbot-backend
+    restart: always
+    network_mode: host
+    env_file:
+      - ./sqlbot-backend.env
+    volumes:
+      - ./data/sqlbot/excel:/opt/sqlbot/data/excel
+      - ./data/sqlbot/file:/opt/sqlbot/data/file
+      - ./data/sqlbot/images:/opt/sqlbot/images
+      - ./data/sqlbot/logs:/opt/sqlbot/app/logs
+
+  sqlbot-frontend:
+    image: sqlbot-cx-frontend:latest
+    container_name: sqlbot-frontend
+    restart: always
+    network_mode: host
+    depends_on:
+      - sqlbot-backend

@@ -1,0 +1,12 @@
+FROM sqlbot-cx-runtime:latest
+
+COPY deploy/start-host.sh /opt/sqlbot/app/start.sh
+
+# Optional local model override. Keep deploy/models present so this COPY never fails.
+# If deploy/models contains H:\opt\sqlbot\models content, it is merged into /opt/sqlbot/models.
+COPY deploy/models /opt/sqlbot/models
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD curl -f http://127.0.0.1:8011/openapi.json || exit 1
+
+ENTRYPOINT ["sh", "/opt/sqlbot/app/start.sh"]

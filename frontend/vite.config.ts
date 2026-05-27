@@ -8,10 +8,11 @@ import svgLoader from 'vite-svg-loader'
 import qiankun from 'vite-plugin-qiankun'
 export default defineConfig(({ mode }: any): any => {
   const env = loadEnv(mode, process.cwd())
+  const base = env.VITE_PUBLIC_BASE_URL || (mode === 'development' ? '/' : '/sqlbot/')
   console.info(mode)
   console.info(env)
   return {
-    base: mode === 'development' ? '/' : '/sqlbot/',
+    base,
     plugins: [
       vue(),
       qiankun('SQLBot', {

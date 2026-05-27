@@ -1,0 +1,28 @@
+# 在slqbot根目录下
+# build
+$env:DOCKER_BUILDKIT=1
+
+docker build -t sqlbot-cx-runtime:20260526 .
+
+docker build -t sqlbot-cx-backend-host:20260526 `
+  -f deploy/Dockerfile.backend-host .
+
+docker build -t sqlbot-cx-frontend:20260526 `
+  -f deploy/Dockerfile.frontend `
+  --build-arg VITE_API_BASE_URL=http://127.0.0.1:5173/api/v1 `
+  --build-arg VITE_PLATFORM_LOGICAL_DATASOURCE_ENABLED=true `
+  --build-arg VITE_SHOW_REASONING=false `
+  .
+
+# save
+docker save sqlbot-cx-backend-host:20260526 sqlbot-cx-frontend:20260526 -o sqlbot-cx-images-20260526.tar
+tar -czf sqlbot-cx-deploy-20260526.tar.gz sqlbot-cx-images-20260526.tar deploy/docker-compose.host.yml deploy/sqlbot-backend.env
+
+# d
+
+tar -xzf sqlbot-cx-deploy-20260526.tar.gz
+docker load -i sqlbot-cx-images-20260526.tar
+
+cd deploy
+mkdir -p data/sqlbot/excel data/sqlbot/file data/sqlbot/images data/sqlbot/logs
+docker compose -f docker-compose.host.yml up -d

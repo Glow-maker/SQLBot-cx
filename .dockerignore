@@ -10,3 +10,26 @@ backend/.gitignore
 backend/README.md
 backend/scripts
 backend/.DS_Store
+
+# Frontend build/runtime artifacts
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Runtime data and logs
+backend/logs
+backend/data
+data
+*.log
+
+# Local metadata and secrets
+.git
+.env
+.env.*
+
+# Deployment package outputs; keep deploy/models available for optional model copy
+deploy/*.env
+deploy/*.tar
+deploy/*.tar.gz
+sqlbot-cx-*.tar
+sqlbot-cx-*.tar.gz

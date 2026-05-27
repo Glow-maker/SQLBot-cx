@@ -1,6 +1,6 @@
 # Build sqlbot
 FROM ghcr.io/1panel-dev/maxkb-vector-model:v1.0.1 AS vector-model
-FROM --platform=${BUILDPLATFORM} registry.cn-qingdao.aliyuncs.com/dataease/sqlbot-base:latest AS sqlbot-ui-builder
+FROM --platform=${BUILDPLATFORM} node:20-alpine AS sqlbot-ui-builder
 ENV SQLBOT_HOME=/opt/sqlbot
 ENV APP_HOME=${SQLBOT_HOME}/app
 ENV UI_HOME=${SQLBOT_HOME}/frontend
@@ -23,6 +23,9 @@ ENV PATH="${APP_HOME}/.venv/bin:$PATH"
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG SQLBOT_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 
 # Create necessary directories
 RUN mkdir -p ${APP_HOME} ${UI_HOME}
@@ -38,6 +41,8 @@ RUN test -f "./uv.lock" && \
     uv sync --frozen --no-install-project || echo "uv.lock file not found, skipping intermediate-layers"
 
 COPY ./backend ${APP_HOME}
+
+RUN sed -i "s#https://mirrors.hust.edu.cn/pypi/web/simple#${SQLBOT_PYPI_INDEX_URL}#g" pyproject.toml
 
 # Final sync to ensure all dependencies are installed
 RUN --mount=type=cache,target=/root/.cache/uv \

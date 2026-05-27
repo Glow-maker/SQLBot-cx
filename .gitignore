@@ -11,6 +11,11 @@ components.d.ts
 # 集成改造期内部文档，暂不上传（保留 archive 与项目原有文档）
 docs/
 
+# Docker 部署本地模型目录：模型文件体积大，不上传；仅保留占位文件
+deploy/models/*
+!deploy/models/.gitkeep
+deploy/package/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
