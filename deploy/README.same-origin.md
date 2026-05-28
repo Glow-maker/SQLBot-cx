@@ -59,7 +59,9 @@ VITE_SQLBOT_ENTRY=/sqlbot/
 
 ```bash
 curl -I http://127.0.0.1:5173/sqlbot/
+curl -I http://127.0.0.1:5173/sqlbot/xpack_static/license-generator.umd.js
 curl -I http://127.0.0.1/sqlbot/
+curl -I http://127.0.0.1/sqlbot/xpack_static/license-generator.umd.js
 ```
 
 浏览器访问：

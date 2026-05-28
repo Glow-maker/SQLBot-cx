@@ -59,7 +59,7 @@ sh deploy/build-backend-only.sh
 SQLBOT_RUNTIME_DOCKERFILE=deploy/Dockerfile.runtime-local-model \
 SQLBOT_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 VITE_API_BASE_URL=/api/v1 \
-VITE_PUBLIC_BASE_URL=http://服务器IP:5173/sqlbot/ \
+VITE_PUBLIC_BASE_URL=/sqlbot/ \
 sh deploy/build-and-up.sh
 ```
 
@@ -86,7 +86,7 @@ docker build -t sqlbot-cx-backend-host:latest `
 docker build -t sqlbot-cx-frontend:latest `
   -f deploy/Dockerfile.frontend `
   --build-arg VITE_API_BASE_URL=/api/v1 `
-  --build-arg VITE_PUBLIC_BASE_URL=http://服务器IP:5173/sqlbot/ `
+  --build-arg VITE_PUBLIC_BASE_URL=/sqlbot/ `
   --build-arg VITE_PLATFORM_LOGICAL_DATASOURCE_ENABLED=true `
   --build-arg VITE_SHOW_REASONING=false `
   .
@@ -109,7 +109,7 @@ docker build -t sqlbot-cx-backend-host:latest -f deploy/Dockerfile.backend-host 
 docker build -t sqlbot-cx-frontend:latest \
   -f deploy/Dockerfile.frontend \
   --build-arg VITE_API_BASE_URL=/api/v1 \
-  --build-arg VITE_PUBLIC_BASE_URL=http://服务器IP:5173/sqlbot/ \
+  --build-arg VITE_PUBLIC_BASE_URL=/sqlbot/ \
   --build-arg VITE_PLATFORM_LOGICAL_DATASOURCE_ENABLED=true \
   --build-arg VITE_SHOW_REASONING=false \
   .
@@ -168,6 +168,7 @@ docker logs -f sqlbot-frontend
 ```bash
 curl http://127.0.0.1:8011/openapi.json
 curl http://127.0.0.1:5173/sqlbot/
+curl -I http://127.0.0.1:5173/sqlbot/xpack_static/license-generator.umd.js
 curl http://127.0.0.1:5173/api/v1/openapi.json
 curl "http://127.0.0.1:48080/admin-api/system/tenant/get-id-by-name?name=八院"
 ```
@@ -187,7 +188,7 @@ SQLBOT_FRONTEND_URL=http://服务器IP:5173/sqlbot/ sh deploy/verify-frontend.sh
 如果只改了前端代码，不需要重建 runtime/backend，可以只重建并重启前端：
 
 ```bash
-VITE_PUBLIC_BASE_URL=http://服务器IP:5173/sqlbot/ sh deploy/build-frontend-only.sh
+VITE_PUBLIC_BASE_URL=/sqlbot/ sh deploy/build-frontend-only.sh
 ```
 
 浏览器访问：

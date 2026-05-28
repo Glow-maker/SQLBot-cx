@@ -69,10 +69,12 @@ const loadXpackStatic = () => {
   if (document.getElementById('sqlbot_xpack_static')) {
     return Promise.resolve()
   }
-  const url = `/xpack_static/license-generator.umd.js?t=${Date.now()}`
+  const staticBase = new URL(import.meta.env.BASE_URL || '/', import.meta.url)
+  const url = new URL('xpack_static/license-generator.umd.js', staticBase)
+  url.searchParams.set('t', String(Date.now()))
   return new Promise((resolve, reject) => {
     request
-      .loadRemoteScript(url, 'sqlbot_xpack_static', () => {
+      .loadRemoteScript(url.toString(), 'sqlbot_xpack_static', () => {
         LicenseGenerator?.init(import.meta.env.VITE_API_BASE_URL).then(() => {
           resolve(true)
         })

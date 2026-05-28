@@ -10,6 +10,7 @@ BUNDLE_CHECK_BYTES=${SQLBOT_BUNDLE_CHECK_BYTES:-1048576}
 TMP_DIR=${TMPDIR:-/tmp}
 HTML_FILE="$TMP_DIR/sqlbot-frontend-index.html"
 JS_FILE="$TMP_DIR/sqlbot-frontend-entry.js"
+XPACK_FILE="$TMP_DIR/sqlbot-frontend-xpack.js"
 
 case "$FRONTEND_URL" in
   */) BASE_URL="$FRONTEND_URL" ;;
@@ -63,4 +64,13 @@ if grep -q 'class jb extends tl\|less/lib/less\|MixinDefinition\|NamespaceValue'
   exit 1
 fi
 
-echo "PASS: SQLBot frontend entry is consistent and does not contain the known Less runtime error fragments."
+XPACK_URL="${BASE_URL}xpack_static/license-generator.umd.js"
+echo "Xpack static URL: $XPACK_URL"
+curl -fsSL --max-time "$CURL_MAX_TIME" "$XPACK_URL" -o "$XPACK_FILE"
+
+if [ ! -s "$XPACK_FILE" ]; then
+  echo "FAIL: xpack_static/license-generator.umd.js is missing or empty"
+  exit 1
+fi
+
+echo "PASS: SQLBot frontend entry is consistent, xpack_static exists, and the known Less runtime fragments are absent."
