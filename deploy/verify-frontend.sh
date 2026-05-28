@@ -89,6 +89,19 @@ if grep -q 'class jb extends tl\|less/lib/less\|MixinDefinition\|NamespaceValue'
   exit 1
 fi
 
+# Fetch the full entry once for route-base checks. The router code can be beyond
+# the small byte range used for the fast Less-runtime smoke check above.
+fetch_with_retry "$ENTRY_URL" "$JS_FILE"
+
+if grep -q '__POWERED_BY_QIANKUN__.*?"/sqlbot":"/"' "$JS_FILE"; then
+  echo "FAIL: entry bundle still uses fixed standalone router base '/' under /sqlbot deployment"
+  exit 1
+fi
+
+if ! grep -q 'window.location.origin' "$JS_FILE" || ! grep -q '\.pathname' "$JS_FILE"; then
+  echo "WARN: cannot confirm router base normalizes Vite base URL to pathname"
+fi
+
 XPACK_URL="${BASE_URL}xpack_static/license-generator.umd.js"
 echo "Xpack static URL: $XPACK_URL"
 fetch_with_retry "$XPACK_URL" "$XPACK_FILE"
