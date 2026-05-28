@@ -1,7 +1,5 @@
 import dayjs from 'dayjs'
 import { useCache } from '@/utils/useCache'
-import colorFunctions from 'less/lib/less/functions/color.js'
-import colorTree from 'less/lib/less/tree/color.js'
 
 const { wsCache } = useCache()
 const getCheckDate = (timestamp: any) => {
@@ -160,6 +158,31 @@ function rgbaToHex(r: any, g: any, b: any, a: any) {
   return `#${hexR}${hexG}${hexB}${hexA}`.toUpperCase()
 }
 
+function normalizeHexColor(color: string) {
+  const value = color.replace('#', '')
+  if (value.length === 3) {
+    return value
+      .split('')
+      .map((item) => item + item)
+      .join('')
+  }
+  return value.slice(0, 6)
+}
+
+function mixHexColor(firstColor: string, secondColor: string, weight: number) {
+  const first = normalizeHexColor(firstColor)
+  const second = normalizeHexColor(secondColor)
+  const ratio = Math.max(0, Math.min(100, weight)) / 100
+  const mixed = [0, 2, 4].map((index) => {
+    const firstValue = parseInt(first.slice(index, index + 2), 16)
+    const secondValue = parseInt(second.slice(index, index + 2), 16)
+    return Math.round(firstValue * ratio + secondValue * (1 - ratio))
+      .toString(16)
+      .padStart(2, '0')
+  })
+  return `#${mixed.join('')}`.toUpperCase()
+}
+
 export function colorStringToHex(colorStr: any) {
   if (colorStr.startsWith('#')) return colorStr
   // 提取颜色值
@@ -185,36 +208,26 @@ export const setCurrentColor = (color: any, element: HTMLElement = document.docu
   element.style.setProperty('--van-blue', currentColor)
   element.style.setProperty(
     '--ed-color-primary-light-5',
-    colorFunctions
-      .mix(new colorTree('ffffff'), new colorTree(currentColor.substr(1)), { value: 40 })
-      .toRGB()
+    mixHexColor('#ffffff', currentColor, 40)
   )
   element.style.setProperty(
     '--ed-color-primary-light-3',
-    colorFunctions
-      .mix(new colorTree('ffffff'), new colorTree(currentColor.substr(1)), { value: 15 })
-      .toRGB()
+    mixHexColor('#ffffff', currentColor, 15)
   )
 
   element.style.setProperty(
     '--ed-color-primary-60',
-    colorFunctions
-      .mix(new colorTree('ffffff'), new colorTree(currentColor.substr(1)), { value: 60 })
-      .toRGB()
+    mixHexColor('#ffffff', currentColor, 60)
   )
 
   element.style.setProperty(
     '--ed-color-primary-80',
-    colorFunctions
-      .mix(new colorTree('ffffff'), new colorTree(currentColor.substr(1)), { value: 80 })
-      .toRGB()
+    mixHexColor('#ffffff', currentColor, 80)
   )
 
   element.style.setProperty(
     '--ed-color-primary-15-d',
-    colorFunctions
-      .mix(new colorTree('000000'), new colorTree(currentColor.substr(1)), { value: 15 })
-      .toRGB()
+    mixHexColor('#000000', currentColor, 15)
   )
   element.style.setProperty('--ed-color-primary-1a', `${currentColor}1a`)
   element.style.setProperty('--ed-color-primary-14', `${currentColor}14`)
@@ -222,9 +235,7 @@ export const setCurrentColor = (color: any, element: HTMLElement = document.docu
   element.style.setProperty('--ed-color-primary-99', `${currentColor}99`)
   element.style.setProperty(
     '--ed-color-primary-dark-2',
-    colorFunctions
-      .mix(new colorTree('000000'), new colorTree(currentColor.substr(1)), { value: 15 })
-      .toRGB()
+    mixHexColor('#000000', currentColor, 15)
   )
 }
 export const getQueryString = (name: string) => {

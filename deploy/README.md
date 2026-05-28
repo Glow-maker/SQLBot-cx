@@ -172,6 +172,24 @@ curl http://127.0.0.1:5173/api/v1/openapi.json
 curl "http://127.0.0.1:48080/admin-api/system/tenant/get-id-by-name?name=八院"
 ```
 
+校验前端静态包是否已经切到当前镜像：
+
+```bash
+sh deploy/verify-frontend.sh
+```
+
+如果需要从其他机器校验服务器地址：
+
+```bash
+SQLBOT_FRONTEND_URL=http://服务器IP:5173/sqlbot/ sh deploy/verify-frontend.sh
+```
+
+如果只改了前端代码，不需要重建 runtime/backend，可以只重建并重启前端：
+
+```bash
+VITE_PUBLIC_BASE_URL=http://服务器IP:5173/sqlbot/ sh deploy/build-frontend-only.sh
+```
+
 浏览器访问：
 
 ```text
