@@ -6,6 +6,7 @@
 - 这个脚本会调用原来的 `build-and-up.sh`，只是默认补上同源前端参数。
 - 只做同源访问、nginx 代理、前端入口调整时，不需要修改 runtime，也不需要修改后端业务代码。
 - 如果想最省事，可以继续用一键脚本完整构建；如果只改前端，可以只重建 frontend。
+- 本地中台前端跨域加载远端 SQLBot 时，不要用同源构建参数；用下面的“本地跨域调试”脚本。
 
 ## 什么时候重建
 
@@ -30,6 +31,30 @@ sh deploy/build-and-up-same-origin.sh
 ```text
 VITE_PUBLIC_BASE_URL=/sqlbot/
 VITE_API_BASE_URL=/api/v1
+```
+
+## 本地跨域调试
+
+本地中台页面是 `http://localhost`，SQLBot 在服务器 `http://100.78.50.94:5173` 时，SQLBot 前端资源必须构建成完整 URL，否则 qiankun 执行入口后会去请求 `http://localhost/sqlbot/assets/...`。
+
+```bash
+cd /opt/sqlbot/sqlbot
+git pull
+SQLBOT_PUBLIC_ORIGIN=http://100.78.50.94:5173 sh deploy/build-frontend-remote-debug.sh
+```
+
+此模式生成：
+
+```text
+VITE_PUBLIC_BASE_URL=http://100.78.50.94:5173/sqlbot/
+VITE_API_BASE_URL=http://100.78.50.94:5173/api/v1
+SQLBOT_EXPECTED_ASSET_PREFIX=http://100.78.50.94:5173/sqlbot/assets/
+```
+
+调试完成、要回到服务器同源部署时，再执行：
+
+```bash
+sh deploy/build-and-up-same-origin.sh
 ```
 
 ## 数据中台 nginx

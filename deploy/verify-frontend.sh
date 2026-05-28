@@ -4,7 +4,9 @@ set -eu
 FRONTEND_URL=${SQLBOT_FRONTEND_URL:-http://127.0.0.1:5173/sqlbot/}
 CONTAINER_NAME=${SQLBOT_FRONTEND_CONTAINER:-sqlbot-frontend}
 EXPECTED_ENTRY=${SQLBOT_EXPECTED_ENTRY_JS:-}
+EXPECTED_ASSET_PREFIX=${SQLBOT_EXPECTED_ASSET_PREFIX:-}
 CURL_MAX_TIME=${SQLBOT_CURL_MAX_TIME:-15}
+CURL_RETRIES=${SQLBOT_CURL_RETRIES:-10}
 BUNDLE_CHECK_BYTES=${SQLBOT_BUNDLE_CHECK_BYTES:-1048576}
 
 TMP_DIR=${TMPDIR:-/tmp}
@@ -18,7 +20,25 @@ case "$FRONTEND_URL" in
 esac
 
 echo "Checking SQLBot frontend: $BASE_URL"
-curl -fsSL --max-time "$CURL_MAX_TIME" "$BASE_URL" -o "$HTML_FILE"
+
+fetch_with_retry() {
+  url=$1
+  output=$2
+  shift 2
+  attempt=1
+  while :; do
+    if curl -fsSL --max-time "$CURL_MAX_TIME" "$@" "$url" -o "$output"; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$CURL_RETRIES" ]; then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+}
+
+fetch_with_retry "$BASE_URL" "$HTML_FILE"
 
 ENTRY_JS=$(grep -o 'index\.[^"'"'"']*\.js' "$HTML_FILE" | head -n 1 || true)
 if [ -z "$ENTRY_JS" ]; then
@@ -27,6 +47,11 @@ if [ -z "$ENTRY_JS" ]; then
 fi
 
 echo "Remote entry: $ENTRY_JS"
+
+if [ -n "$EXPECTED_ASSET_PREFIX" ] && ! grep -q "$EXPECTED_ASSET_PREFIX" "$HTML_FILE"; then
+  echo "FAIL: frontend entry asset prefix does not match expected prefix: $EXPECTED_ASSET_PREFIX"
+  exit 1
+fi
 
 if [ -n "$EXPECTED_ENTRY" ] && [ "$ENTRY_JS" != "$EXPECTED_ENTRY" ]; then
   echo "FAIL: remote entry is $ENTRY_JS, expected $EXPECTED_ENTRY"
@@ -57,7 +82,7 @@ fi
 
 echo "Entry URL: $ENTRY_URL"
 RANGE_END=$((BUNDLE_CHECK_BYTES - 1))
-curl -fsSL --max-time "$CURL_MAX_TIME" --range "0-$RANGE_END" "$ENTRY_URL" -o "$JS_FILE"
+fetch_with_retry "$ENTRY_URL" "$JS_FILE" --range "0-$RANGE_END"
 
 if grep -q 'class jb extends tl\|less/lib/less\|MixinDefinition\|NamespaceValue' "$JS_FILE"; then
   echo "FAIL: entry bundle still contains Less runtime fragments that caused the tl initialization error"
@@ -66,7 +91,7 @@ fi
 
 XPACK_URL="${BASE_URL}xpack_static/license-generator.umd.js"
 echo "Xpack static URL: $XPACK_URL"
-curl -fsSL --max-time "$CURL_MAX_TIME" "$XPACK_URL" -o "$XPACK_FILE"
+fetch_with_retry "$XPACK_URL" "$XPACK_FILE"
 
 if [ ! -s "$XPACK_FILE" ]; then
   echo "FAIL: xpack_static/license-generator.umd.js is missing or empty"
