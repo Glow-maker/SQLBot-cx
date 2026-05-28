@@ -36,6 +36,18 @@ import { i18n } from '@/i18n'
 import { watchRouter } from './watch'
 
 const t = i18n.global.t
+const getRouterBase = () => {
+  if (qiankunWindow.__POWERED_BY_QIANKUN__) {
+    return '/sqlbot'
+  }
+  const base = import.meta.env.BASE_URL || '/'
+  try {
+    return new URL(base, window.location.origin).pathname || '/'
+  } catch {
+    return base
+  }
+}
+
 export const routes = [
   {
     path: '/login',
@@ -281,7 +293,7 @@ export const routes = [
   },
 ]
 const router = createRouter({
-  history: createWebHistory(qiankunWindow.__POWERED_BY_QIANKUN__ ? '/sqlbot' : '/'),
+  history: createWebHistory(getRouterBase()),
   routes,
 })
 watchRouter(router)
