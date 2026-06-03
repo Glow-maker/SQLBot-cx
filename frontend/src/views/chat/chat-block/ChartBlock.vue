@@ -48,6 +48,7 @@ const { copy } = useClipboard({ legacy: true })
 const loading = ref<boolean>(false)
 const { t } = useI18n()
 const addViewRef = ref(null)
+const showAddToDashboard = false
 const emits = defineEmits(['exitFullScreen'])
 
 const dataObject = computed<{
@@ -448,7 +449,7 @@ watch(
             </div>
           </el-popover>
         </div>
-        <div v-if="message?.record?.chart && !isAssistant">
+        <div v-if="showAddToDashboard && message?.record?.chart && !isAssistant">
           <el-tooltip effect="dark" :content="t('chat.add_to_dashboard')" placement="top">
             <el-button class="tool-btn" text @click="addToDashboard">
               <el-icon size="16">
@@ -505,7 +506,7 @@ watch(
       </div>
     </template>
 
-    <AddViewDashboard ref="addViewRef"></AddViewDashboard>
+    <AddViewDashboard v-if="showAddToDashboard" ref="addViewRef"></AddViewDashboard>
     <el-dialog
       v-if="!enlarge"
       v-model="dialogVisible"
