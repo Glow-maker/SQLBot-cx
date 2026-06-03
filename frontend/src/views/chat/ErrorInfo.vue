@@ -187,6 +187,18 @@ function showTraceBack() {
       </div>
     </div>
     <div
+      v-else-if="errorMessage.type === 'datasource_not_found'"
+      class="error-container datasource-not-found"
+    >
+      <div class="datasource-not-found-title">未找到相关数据表</div>
+      <div class="datasource-not-found-message">
+        {{ errorMessage.message || '没有与问题相关的表' }}
+      </div>
+      <div class="datasource-not-found-desc">
+        请换一种问法，或联系数据管理员补充数据目录。
+      </div>
+    </div>
+    <div
       v-else-if="!errorMessage.showMore && errorMessage.type == undefined"
       v-dompurify-html="errorMessage.message"
       class="error-container"
@@ -360,6 +372,32 @@ function showTraceBack() {
 .cross-source-ds {
   flex-shrink: 0;
   font-size: 12px;
+  color: #646a73;
+}
+
+.datasource-not-found {
+  border: 1px solid #d7dde8;
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.datasource-not-found-title {
+  font-weight: 600;
+  color: #1f2329;
+}
+
+.datasource-not-found-message {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 20px;
+  color: #4e5969;
+}
+
+.datasource-not-found-desc {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 18px;
   color: #646a73;
 }
 </style>
