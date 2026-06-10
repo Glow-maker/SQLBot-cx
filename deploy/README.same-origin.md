@@ -29,7 +29,7 @@ sh deploy/build-and-up-same-origin.sh
 默认前端参数：
 
 ```text
-VITE_PUBLIC_BASE_URL=/sqlbot/
+VITE_PUBLIC_BASE_URL=/sqlbot-app/
 VITE_API_BASE_URL=/api/v1
 ```
 
@@ -69,7 +69,7 @@ nginx -s reload
 代理关系：
 
 ```text
-/sqlbot/ -> http://127.0.0.1:5173/sqlbot/
+/sqlbot-app/ -> http://127.0.0.1:5173/sqlbot/
 /api/v1/ -> http://127.0.0.1:8011/api/v1/
 /images/ -> http://127.0.0.1:8012/images/
 ```
@@ -77,7 +77,7 @@ nginx -s reload
 ## 数据中台前端入口
 
 ```env
-VITE_SQLBOT_ENTRY=/sqlbot/
+VITE_SQLBOT_ENTRY=/sqlbot-app/
 ```
 
 ## 验证
@@ -85,8 +85,8 @@ VITE_SQLBOT_ENTRY=/sqlbot/
 ```bash
 curl -I http://127.0.0.1:5173/sqlbot/
 curl -I http://127.0.0.1:5173/sqlbot/xpack_static/license-generator.umd.js
-curl -I http://127.0.0.1/sqlbot/
-curl -I http://127.0.0.1/sqlbot/xpack_static/license-generator.umd.js
+curl -I http://127.0.0.1/sqlbot-app/
+curl -I http://127.0.0.1/sqlbot-app/xpack_static/license-generator.umd.js
 ```
 
 浏览器访问：
@@ -98,6 +98,6 @@ http://服务器IP/sqlbot/chat/index
 Network 里应看到：
 
 ```text
-/sqlbot/assets/xxx.js
+/sqlbot-app/assets/xxx.js
 /api/v1/xxx
 ```
