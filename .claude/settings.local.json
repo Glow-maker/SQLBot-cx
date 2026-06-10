@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "PowerShell(conda activate *)",
+      "PowerShell(conda env *)",
+      "PowerShell(& \"D:\\\\Anaconda3\\\\envs\\\\sqlbot\\\\python.exe\" -c \"import sqlbot_xpack, os; print\\(os.path.dirname\\(sqlbot_xpack.__file__\\)\\)\")",
+      "PowerShell(& \"D:\\\\Anaconda3\\\\envs\\\\sqlbot\\\\python.exe\" -c \"import time; t=time.time\\(\\); import sqlbot_xpack; print\\(f'import sqlbot_xpack: {time.time\\(\\)-t:.2f}s'\\)\")",
+      "Bash(command -v strings)",
+      "PowerShell(& \"D:\\\\Anaconda3\\\\envs\\\\sqlbot\\\\python.exe\" -m pip install py-spy --quiet 2>&1 | Select-Object -Last 5)",
+      "Bash(HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 /d/Anaconda3/envs/sqlbot/python.exe scripts/verify_phase2a_3a.py)",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\")",
+      "Bash(taskkill //F //IM python.exe //FI \"MEMUSAGE lt 100000\")",
+      "Bash(HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONIOENCODING=utf-8 /d/Anaconda3/envs/sqlbot/python.exe scripts/verify_phase2a_3a.py)",
+      "Bash(git check-ignore *)",
+      "PowerShell(& \"D:\\\\Anaconda3\\\\envs\\\\sqlbot\\\\python.exe\" -c \"import fakeredis; print\\(fakeredis.__version__\\)\" 2>&1)",
+      "Bash(git commit -m ' *)",
+      "Bash(xargs grep -l \"openapi\\\\|/openapi\")",
+      "Bash(xargs grep -l \"sqlbot\\\\|SQLBot\")",
+      "Bash(xargs grep -l \"permit-all-urls\")",
+      "Bash(git *)",
+      "Bash(mvn -pl yudao-module-data/yudao-module-data-biz -am clean compile -DskipTests -q)",
+      "Bash(mvn -pl yudao-module-data/yudao-module-data-biz -am compile -DskipTests)",
+      "Bash(curl -sS -i \"http://127.0.0.1:48080/openapi/sqlbot/datasources/query\")",
+      "Bash(curl -sS -i \"http://127.0.0.1:48104/openapi/sqlbot/datasources/query\" --connect-timeout 3)",
+      "Bash(curl -sS \"http://127.0.0.1:48080/openapi/sqlbot/datasources/query\" -H \"Authorization: Bearer d977c32da3fd488b85e2db31f9329009\" -H \"tenant-id: 124\")",
+      "Bash(curl *)",
+      "Bash(xargs grep -l \"sqlbot\\\\|SQLBOT\\\\|__INJECTED_LOGIN_STATE__\\\\|registerMicroApps\\\\|loadMicroApp\\\\|start.*qiankun\")",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":80 \")",
+      "Bash(tasklist /FI \"PID eq 33400\")",
+      "Bash(powershell.exe *)",
+      "Bash(awk 'NR>=360 && NR<=398 && /v-if|<div|<template|^        </' \"H:/light/project/SQLBot-cx/frontend/src/views/chat/index.vue\")"
+    ]
+  }
+}
