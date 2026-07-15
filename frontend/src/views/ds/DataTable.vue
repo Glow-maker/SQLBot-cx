@@ -364,7 +364,7 @@ const btnSelectClick = (val: any) => {
       </el-icon>
       <div class="name">{{ info.name }}</div>
       <div class="export-remark">
-        <el-button style="margin-right: 12px" @click="downloadTemplate" secondary>
+        <el-button style="margin-right: 12px" secondary @click="downloadTemplate">
           <template #icon>
             <icon_import_outlined></icon_import_outlined>
           </template>
@@ -677,12 +677,12 @@ const btnSelectClick = (val: any) => {
       color: #646a73;
 
       &:hover {
-        background: var(--ed-color-primary-1a, #1cba901a);
+        background: var(--ed-color-primary-1a, #409eff1a);
         color: var(--ed-color-primary);
       }
       &:active {
         color: var(--ed-color-primary-dark-2);
-        background: var(--ed-color-primary-33, #1cba9033);
+        background: var(--ed-color-primary-33, #409eff33);
       }
     }
 
@@ -803,7 +803,7 @@ const btnSelectClick = (val: any) => {
           }
 
           &.isActive {
-            background: var(--ed-color-primary-1a, #1cba901a);
+            background: var(--ed-color-primary-1a, #409eff1a);
             color: var(--ed-color-primary);
           }
         }
@@ -928,7 +928,7 @@ const btnSelectClick = (val: any) => {
           border-radius: 4px;
 
           .is-active {
-            background: var(--ed-color-primary-1a, #1cba901a);
+            background: var(--ed-color-primary-1a, #409eff1a);
           }
 
           .ed-button:not(.is-active) {

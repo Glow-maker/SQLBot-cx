@@ -99,7 +99,7 @@ const pageLogo = computed(() => {
   position: relative;
   overflow: hidden;
   .header {
-    background: var(--ed-color-primary-1a, #1cba901a);
+    background: var(--ed-color-primary-1a, #409eff1a);
     height: 56px;
     padding: 0 16px;
     display: flex;

@@ -163,7 +163,7 @@
                   <div class="navigate-preview" style="height: 425px">
                     <div class="navigate-head">
                       <div class="header-sql">
-                        <img height="30" width="30" v-if="pageLogin" :src="pageLogin" alt="" />
+                        <img v-if="pageLogin" height="30" width="30" :src="pageLogin" alt="" />
                         <custom_small v-else-if="themeColor !== 'default'" class="logo" />
                         <logo v-else></logo>
                         <span style="margin-left: 8px">{{ loginForm.name }}</span>
@@ -333,7 +333,7 @@ const baseUrl = basePath + '/system/appearance/picture/'
 const fileList = ref<(UploadUserFile & { flag: string })[]>([])
 const navigateBg = ref('dark')
 const themeColor = ref('default')
-const customColor = ref('#1CBA90')
+const customColor = ref('#409eff')
 const web = ref('')
 const bg = ref('')
 const login = ref('')
@@ -514,7 +514,7 @@ const init = () => {
         if (themeColor.value === 'custom') {
           setPageCustomColor(customColor.value)
         } else {
-          setPageCustomColor(isBlue.value ? '#3370FF' : '#1CBA90')
+          setPageCustomColor(isBlue.value ? '#409eff' : '#409eff')
         }
       })
     })
@@ -550,7 +550,7 @@ const themeColorChange = (val: any) => {
   if (themeColor.value === 'custom') {
     setPageCustomColor(customColor.value)
   } else {
-    setPageCustomColor(isBlue.value ? '#3370FF' : '#1CBA90')
+    setPageCustomColor(isBlue.value ? '#409eff' : '#409eff')
   }
 }
 const customColorChange = (val: any) => {
@@ -812,7 +812,7 @@ onUnmounted(() => {
           border-radius: 6px;
 
           .is-active {
-            background: var(--ed-color-primary-1a, #1cba901a);
+            background: var(--ed-color-primary-1a, #409eff1a);
             font-weight: 500;
           }
 
@@ -951,15 +951,15 @@ onUnmounted(() => {
                   line-height: 24px;
                   font-weight: 500;
 
-                  --ed-button-text-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
-                  --ed-button-hover-text-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
-                  --ed-button-active-text-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
+                  --ed-button-text-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
+                  --ed-button-hover-text-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
+                  --ed-button-active-text-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
                   --ed-button-bg-color: rgba(248, 249, 250, 1);
-                  --ed-button-hover-bg-color: var(--ed-color-primary-1a, #1cba901a);
+                  --ed-button-hover-bg-color: var(--ed-color-primary-1a, #409eff1a);
                   --ed-button-border-color: rgba(217, 220, 223, 1);
-                  --ed-button-hover-border-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
-                  --ed-button-active-bg-color: var(--ed-color-primary-33, #1cba9033);
-                  --ed-button-active-border-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
+                  --ed-button-hover-border-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
+                  --ed-button-active-bg-color: var(--ed-color-primary-33, #409eff33);
+                  --ed-button-active-border-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
                 }
               }
             }

@@ -1205,7 +1205,7 @@ const saveHandler = () => {
       border-radius: 6px;
 
       .is-active {
-        background: var(--ed-color-primary-1a, #1cba901a);
+        background: var(--ed-color-primary-1a, #409eff1a);
       }
 
       .ed-button:not(.is-active) {
@@ -1469,8 +1469,8 @@ const saveHandler = () => {
       }
 
       &.active {
-        background: var(--ed-color-primary-1a, #1cba901a);
-        border-color: var(--ed-color-primary, #1cba90);
+        background: var(--ed-color-primary-1a, #409eff1a);
+        border-color: var(--ed-color-primary, #409eff);
       }
     }
     .line {

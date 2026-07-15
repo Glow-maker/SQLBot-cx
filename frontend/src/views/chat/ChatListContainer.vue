@@ -312,14 +312,14 @@ function onChatRenamed(chat: Chat) {
       font-size: 16px;
       font-weight: 500;
 
-      --ed-button-text-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
-      --ed-button-bg-color: var(--ed-color-primary-1a, #1cba901a);
-      --ed-button-border-color: var(--ed-color-primary-60, #a4e3d3);
-      --ed-button-hover-bg-color: var(--ed-color-primary-80, #d2f1e9);
-      --ed-button-hover-text-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
-      --ed-button-hover-border-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
-      --ed-button-active-bg-color: var(--ed-color-primary-60, #a4e3d3);
-      --ed-button-active-border-color: var(--ed-color-primary, rgba(28, 186, 144, 1));
+      --ed-button-text-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
+      --ed-button-bg-color: var(--ed-color-primary-1a, #409eff1a);
+      --ed-button-border-color: var(--ed-color-primary-60, #a8cfff);
+      --ed-button-hover-bg-color: var(--ed-color-primary-80, #ecf5ff);
+      --ed-button-hover-text-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
+      --ed-button-hover-border-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
+      --ed-button-active-bg-color: var(--ed-color-primary-60, #a8cfff);
+      --ed-button-active-border-color: var(--ed-color-primary, rgba(64, 158, 255, 1));
     }
 
     .search {

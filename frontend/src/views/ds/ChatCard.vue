@@ -163,7 +163,7 @@ const SelectDs = () => {
 
   &.is-selected {
     border: 1px solid var(--ed-color-primary);
-    background: var(--ed-color-primary-1a, #1cba901a);
+    background: var(--ed-color-primary-1a, #409eff1a);
   }
 }
 </style>

@@ -194,7 +194,7 @@ const pageLogo = computed(() => {
       margin-top: -18px;
 
       &.is-base {
-        background: var(--ed-color-primary-33, #1cba9033);
+        background: var(--ed-color-primary-33, #409eff33);
         color: var(--ed-color-primary-dark-2);
       }
     }

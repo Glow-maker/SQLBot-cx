@@ -154,8 +154,8 @@ const props = withDefaults(
     }
   }
   .title-active {
-    color: rgba(24, 158, 122, 1);
-    background: rgba(28, 186, 144, 0.2);
+    color: rgba(64, 158, 255, 1);
+    background: rgba(64, 158, 255, 0.2);
   }
   .quick_question_content {
     height: 168px;

@@ -1058,7 +1058,7 @@ onMounted(() => {
     height: 40px;
     align-items: center;
     line-height: 40px;
-    background: var(--ed-color-primary-80, #d2f1e9);
+    background: var(--ed-color-primary-80, #dbeafe);
     border-radius: 4px;
     padding-left: 10px;
     .icon-span {

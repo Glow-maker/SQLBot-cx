@@ -659,7 +659,7 @@ const copyCode = (row: any, key: any = 'app_secret') => {
       border-radius: 6px;
 
       .is-active {
-        background: var(--ed-color-primary-1a, #1cba901a);
+        background: var(--ed-color-primary-1a, #409eff1a);
       }
 
       .ed-button:not(.is-active) {

@@ -574,7 +574,7 @@ defineExpose({
         }
 
         :deep(.ed-pager li.number:hover) {
-          background-color: var(--ed-color-primary-1a, #1cba901a);
+          background-color: var(--ed-color-primary-1a, #409eff1a);
         }
       }
 
