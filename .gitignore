@@ -7,6 +7,8 @@ node_modules/
 *.lock
 *-lock.json
 components.d.ts
+.codegraph/
+outputs/
 
 # 集成改造期内部文档，暂不上传（保留 archive 与项目原有文档）
 docs/
