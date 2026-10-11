@@ -50,6 +50,8 @@ def init_table_and_ds_embedding():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     run_migrations()
+    from apps.datasource.embedding.platform_index import get_platform_index
+    get_platform_index().recover()
     init_sqlbot_cache()
     init_dynamic_cors(app)
     init_terminology_embedding_data()
@@ -60,6 +62,8 @@ async def lifespan(app: FastAPI):
     await async_model_info()  # 异步加密已有模型的密钥和地址
     await sqlbot_xpack.core.monitor_app(app)
     yield
+    from fastapi.concurrency import run_in_threadpool
+    await run_in_threadpool(get_platform_index().close)
     SQLBotLogUtil.info("SQLBot 应用关闭")
 
 

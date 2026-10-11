@@ -5,7 +5,10 @@ export declare global {
     __INJECTED_PUBLIC_PATH_BY_QIANKUN__?: string
     __INJECTED_LOGIN_STATE__?: {
       token: string
+      tenantId?: string | number
     }
+    __SQLBOT_GET_LOGIN_STATE__?: () => { token?: string; tenantId?: string | number }
+    __SQLBOT_REFRESH_LOGIN_STATE__?: () => Promise<{ token?: string; tenantId?: string | number }>
     __SQLBOT_SEND_TO_MAIN__?: (type: string, data?: unknown) => void
   }
 }

@@ -27,14 +27,33 @@ locks = {}
 _embedding_model: dict[str, Optional[Embeddings]] = {}
 
 
+class SynchronizedEmbeddings(Embeddings):
+    """The fast tokenizer mutates truncation settings during inference."""
+    def __init__(self, model):
+        self.model = model
+        self.inference_lock = threading.RLock()
+
+    @property
+    def _client(self):
+        return self.model._client
+
+    def embed_documents(self, texts):
+        with self.inference_lock:
+            return self.model.embed_documents(texts)
+
+    def embed_query(self, text):
+        with self.inference_lock:
+            return self.model.embed_query(text)
+
+
 class EmbeddingModelCache:
 
     @staticmethod
     def _new_instance(config: EmbeddingModelInfo = local_embedding_model):
-        return HuggingFaceEmbeddings(model_name=config.name, cache_folder=config.folder,
+        return SynchronizedEmbeddings(HuggingFaceEmbeddings(model_name=config.name, cache_folder=config.folder,
                                      model_kwargs={'device': config.device},
                                      encode_kwargs={'normalize_embeddings': True}
-                                     )
+                                     ))
 
     @staticmethod
     def _get_lock(key: str = settings.DEFAULT_EMBEDDING_MODEL):

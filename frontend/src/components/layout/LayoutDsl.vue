@@ -13,6 +13,14 @@ import { ref, computed, onUnmounted } from 'vue'
 import { useEmitt } from '@/utils/useEmitt'
 import { isMobile } from '@/utils/utils'
 import { onBeforeMount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useUserStore } from '@/stores/user'
+import Menu from './Menu.vue'
+
+const userStore = useUserStore()
+const adminRouter = useRouter()
+const adminRoute = useRoute()
+const showAdminMenu = computed(() => userStore.isAdmin && adminRoute.path.startsWith('/system'))
 
 const isPhone = computed(() => {
   return isMobile()
@@ -67,7 +75,10 @@ onBeforeMount(() => {
 </script>
 
 <template>
-  <div class="system-layout">
+  <div class="system-layout" :class="{ 'admin-layout': showAdminMenu }">
+    <aside v-if="showAdminMenu" class="admin-sidebar" aria-label="系统管理菜单">
+      <Menu :collapse="false" />
+    </aside>
     <!-- <div class="left-side" :class="collapse && 'left-side-collapse'">
       <template v-if="showSysmenu">
         <div class="sys-management" @click="toUserIndex">
@@ -225,7 +236,16 @@ onBeforeMount(() => {
         </div>
       </div>
     </div> -->
-    <div class="right-main" :class="collapse && 'right-side-collapse'">
+    <div
+      class="right-main"
+      :class="{ 'right-side-collapse': collapse, 'with-admin-tools': userStore.isAdmin }"
+    >
+      <nav v-if="userStore.isAdmin" class="admin-toolbar" aria-label="管理员配置入口">
+        <el-button v-if="showAdminMenu" text @click="adminRouter.push('/chat/index')"
+          >返回问数</el-button
+        >
+        <el-button v-else text @click="adminRouter.push('/system/model')">系统配置</el-button>
+      </nav>
       <div class="content">
         <router-view />
       </div>
@@ -239,6 +259,94 @@ onBeforeMount(() => {
   height: 100vh;
   background-color: #f1f4f3;
   display: flex;
+
+  .admin-sidebar {
+    flex: 0 0 220px;
+    padding: 16px;
+    overflow-y: auto;
+  }
+
+  &.admin-layout {
+    background: #f5f7fb;
+
+    .admin-sidebar {
+      box-sizing: border-box;
+      flex-basis: 216px;
+      padding: 56px 12px 24px;
+      border-right: 1px solid #e5eaf2;
+      background: #f8fafc;
+
+      :deep(.ed-menu) {
+        margin: 0;
+      }
+      :deep(.ed-menu-item),
+      :deep(.ed-sub-menu__title) {
+        padding-left: 14px !important;
+        margin-bottom: 6px;
+      }
+      :deep(.ed-menu-item.is-active) {
+        background: #eaf2ff !important;
+        color: #2463d6;
+        font-weight: 600;
+      }
+    }
+
+    .right-main {
+      box-sizing: border-box;
+      padding: 12px 24px 24px;
+    }
+
+    .admin-toolbar {
+      padding: 0 0 12px;
+    }
+    .content {
+      box-sizing: border-box;
+      border: 1px solid #e5eaf2;
+      box-shadow: none;
+    }
+
+    @media (max-width: 900px) {
+      .admin-sidebar {
+        flex-basis: 176px;
+        padding-inline: 8px;
+      }
+      .right-main {
+        padding: 12px;
+      }
+    }
+    @media (max-width: 600px) {
+      flex-direction: column;
+      .admin-sidebar {
+        flex: 0 0 auto;
+        max-height: 176px;
+        padding: 8px;
+        border-right: 0;
+        border-bottom: 1px solid #e5eaf2;
+      }
+      .right-main {
+        min-height: 0;
+      }
+    }
+  }
+
+  .admin-toolbar {
+    display: flex;
+    justify-content: flex-start;
+    padding: 0 8px 8px;
+  }
+
+  .right-main.with-admin-tools {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+
+    .content {
+      flex: 1;
+      min-height: 0;
+      height: auto;
+    }
+  }
 
   @keyframes rotate {
     0% {

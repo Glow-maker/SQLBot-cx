@@ -31,6 +31,7 @@ const keywords = ref('')
 const defaultModelKeywords = ref('')
 const modelConfigvVisible = ref(false)
 const searchLoading = ref(false)
+const modelLoadError = ref(false)
 const editModel = ref(false)
 const activeStep = ref(0)
 const activeName = ref('')
@@ -50,11 +51,14 @@ reactive({
   selectedIds: [],
 })
 const modelList = shallowRef([] as Model[])
+const configuredDefault = computed(() => modelList.value.find(item => item.default_model))
 
 const modelListWithSearch = computed(() => {
   if (!keywords.value) return modelList.value
   return modelList.value.filter((ele) =>
-    ele.name.toLowerCase().includes(keywords.value.toLowerCase())
+    [ele.name, ele.base_model].some((value) =>
+      value?.toLowerCase().includes(keywords.value.trim().toLowerCase())
+    )
   )
 })
 const beforeClose = () => {
@@ -183,8 +187,9 @@ const handleEditModel = (row: any) => {
   activeStep.value = 1
   editModel.value = true
   activeType.value = row.supplier
-  activeName.value = row.supplier_item.name
-  activeNameI18nKey.value = row.supplier_item.i18nKey
+  const supplier = get_supplier(row.supplier)
+  activeName.value = supplier?.name || ''
+  activeNameI18nKey.value = supplier?.i18nKey || ''
   modelApi.query(row.id).then((res: any) => {
     modelConfigvVisible.value = true
     nextTick(() => {
@@ -280,11 +285,13 @@ const setCardRef = (el: any, index: number) => {
 }
 const search = () => {
   searchLoading.value = true
+  modelLoadError.value = false
   modelApi
     .queryAll()
     .then((res: any) => {
       modelList.value = res
     })
+    .catch(() => { modelLoadError.value = true })
     .finally(() => {
       searchLoading.value = false
     })
@@ -299,12 +306,13 @@ const submit = (item: any) => {
 <template>
   <div class="model-config no-padding">
     <div class="model-methods">
-      <span class="title">{{ t('model.ai_model_configuration') }}</span>
+      <h1 class="title">{{ t('model.ai_model_configuration') }}</h1>
       <div class="button-input">
         <el-input
           v-model="keywords"
           clearable
-          style="width: 240px; margin-right: 12px"
+          class="model-search"
+          :aria-label="$t('datasource.search')"
           :placeholder="$t('datasource.search')"
         >
           <template #prefix>
@@ -365,23 +373,20 @@ const submit = (item: any) => {
         </el-button>
       </div>
     </div>
+    <div class="model-status" role="status">
+      <div><span>默认问数模型</span><strong>{{ searchLoading ? '正在读取配置' : modelLoadError ? '暂时无法读取配置，请重试' : configuredDefault?.name || '尚未设置默认模型' }}</strong></div>
+      <el-tag :type="configuredDefault && !modelLoadError ? 'info' : 'warning'">{{ searchLoading ? '加载中' : modelLoadError ? '读取失败' : configuredDefault ? '已配置' : '待配置' }}</el-tag>
+      <el-button :loading="searchLoading" @click="search">刷新配置</el-button>
+      <p v-if="!searchLoading && !modelLoadError">已配置 {{ modelList.length }} 个模型。配置状态不代表连通性，实际可用性以模型校验和问数结果为准。</p>
+    </div>
     <EmptyBackground
       v-if="!!keywords && !modelListWithSearch.length"
       :description="$t('datasource.relevant_content_found')"
       img-type="tree"
     />
     <div v-else class="card-content">
-      <el-row :gutter="16" class="w-full">
-        <el-col
-          v-for="(ele, index) in modelListWithSearch"
-          :key="ele.id"
-          :xs="24"
-          :sm="12"
-          :md="12"
-          :lg="8"
-          :xl="6"
-          class="mb-16"
-        >
+      <div class="model-grid">
+        <div v-for="(ele, index) in modelListWithSearch" :key="ele.id" class="model-grid-item">
           <card
             :id="ele.id"
             :ref="(el: any) => setCardRef(el, index)"
@@ -395,10 +400,10 @@ const submit = (item: any) => {
             @del="deleteHandler"
             @default="handleDefault(ele)"
           ></card>
-        </el-col>
-      </el-row>
+        </div>
+      </div>
     </div>
-    <template v-if="!keywords && !modelListWithSearch.length && !searchLoading">
+    <template v-if="!keywords && !modelListWithSearch.length && !searchLoading && !modelLoadError">
       <EmptyBackground
         class="datasource-yet"
         :description="$t('common.no_model_yet')"
@@ -426,7 +431,9 @@ const submit = (item: any) => {
     >
       <template #header="{ close }">
         <span style="white-space: nowrap">{{
-          editModel ? $t('dashboard.edit') + $t('common.empty') + $t(activeNameI18nKey) : t('model.add_model')
+          editModel
+            ? $t('dashboard.edit') + $t('common.empty') + $t(activeNameI18nKey)
+            : t('model.add_model')
         }}</span>
         <div v-if="!editModel" class="flex-center" style="width: 100%">
           <el-steps custom style="max-width: 500px; flex: 1" :active="activeStep" align-center>
@@ -470,39 +477,70 @@ const submit = (item: any) => {
 
 <style lang="less" scoped>
 .model-config {
-  height: calc(100% - 16px);
-  padding: 16px 0 16px 0;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 28px;
+  overflow-y: auto;
 
   .datasource-yet {
     padding-bottom: 0;
     height: auto;
-    padding-top: 200px;
+    padding-top: 120px;
   }
   .model-methods {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 16px;
-    padding: 0 24px 0 24px;
+    gap: 20px;
+    margin-bottom: 24px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid #edf0f5;
     .title {
-      font-weight: 500;
-      font-size: 20px;
-      line-height: 28px;
+      margin: 0;
+      color: #1f2a3d;
+      font-weight: 600;
+      font-size: 22px;
+      line-height: 32px;
+    }
+    .button-input {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .model-search {
+      width: 240px;
+    }
+    :deep(.ed-button + .ed-button) {
+      margin-left: 0;
     }
   }
-
-  .card-content {
-    max-height: calc(100% - 40px);
-    overflow-y: auto;
-    padding: 0 8px 0 24px;
-
-    .w-full {
+  .model-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+    gap: 20px;
+    align-items: stretch;
+  }
+  .model-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding: 16px 20px; margin-bottom: 20px; border: 1px solid #e4e7ec; border-radius: 10px; background: #f8fafc; }
+  .model-status span, .model-status strong { display: block; }
+  .model-status strong { margin-top: 4px; color: #344054; font-size: 15px; overflow-wrap: anywhere; }
+  .model-status p { flex-basis: 100%; margin: 0; color: #667085; font-size: 12px; line-height: 1.7; }
+  .model-grid-item {
+    min-width: 0;
+    max-width: 580px;
+  }
+  @media (max-width: 900px) {
+    padding: 20px;
+    .model-methods .button-input {
       width: 100%;
     }
-
-    .mb-16 {
-      margin-bottom: 16px;
+    .model-methods .model-search {
+      flex: 1 1 200px;
     }
+  }
+  @media (max-width: 600px) {
+    padding: 16px;
   }
 }
 </style>

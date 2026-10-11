@@ -229,6 +229,8 @@ def get_chat_chart_config(session: SessionDep, chat_record_id: int):
 
 
 def get_chart_data_with_user(session: SessionDep, current_user: CurrentUser, chat_record_id: int):
+    from apps.chat.task.record_access import require_record_access
+    require_record_access(session, current_user, chat_record_id)
     stmt = select(ChatRecord.data).where(and_(ChatRecord.id == chat_record_id, ChatRecord.create_by == current_user.id))
     res = session.execute(stmt)
     for row in res:
@@ -239,6 +241,13 @@ def get_chart_data_with_user(session: SessionDep, current_user: CurrentUser, cha
     return {}
 
 def get_chart_data_with_user_live(session: SessionDep, current_user: CurrentUser, chat_record_id: int):
+    from apps.chat.task.record_access import require_record_access
+    record = require_record_access(session, current_user, chat_record_id)
+    if settings.PLATFORM_DATASOURCE_ENABLED:
+        # Platform IDs are not SQLBot-local datasource IDs. Re-query through the
+        # normal pipeline instead of the legacy local-source execution shortcut.
+        from fastapi import HTTPException
+        raise HTTPException(409, "请使用重新生成，通过当前权限校验后查询")
     stmt = select(ChatRecord.datasource,ChatRecord.sql).where(and_(ChatRecord.id == chat_record_id, ChatRecord.create_by == current_user.id))
     row = session.execute(stmt).first()
     return get_chart_data_ds(session,row.datasource, row.sql)
@@ -275,6 +284,8 @@ def get_chat_chart_data(session: SessionDep, chat_record_id: int):
 
 
 def get_chat_predict_data_with_user(session: SessionDep, current_user: CurrentUser, chat_record_id: int):
+    from apps.chat.task.record_access import require_record_access
+    require_record_access(session, current_user, chat_record_id)
     stmt = select(ChatRecord.predict_data).where(
         and_(ChatRecord.id == chat_record_id, ChatRecord.create_by == current_user.id))
     res = session.execute(stmt)
@@ -311,8 +322,12 @@ def get_chat_with_records(session: SessionDep, chart_id: int, current_user: Curr
     chat = session.get(Chat, chart_id)
     if not chat:
         raise Exception(f"Chat with id {chart_id} not found")
-    if chat.create_by != current_user.id:
+    if chat.create_by != current_user.id or chat.oid != current_user.oid:
         raise Exception(f"Chat with id {chart_id} not Owned by the current user")
+    if settings.PLATFORM_DATASOURCE_ENABLED:
+        from apps.chat.task.record_access import require_record_access
+        for record in session.query(ChatRecord).filter(ChatRecord.chat_id == chart_id).all():
+            require_record_access(session, current_user, record.id)
     chat_info = ChatInfo(**chat.model_dump())
 
     logical_ds_chat = (
@@ -571,6 +586,8 @@ def get_chat_log_history(session: SessionDep, chat_record_id: int, current_user:
     """
     # 1. 首先验证ChatRecord存在且属于当前用户
     chat_record = session.get(ChatRecord, chat_record_id)
+    from apps.chat.task.record_access import require_record_access
+    require_record_access(session, current_user, chat_record_id)
     if not chat_record:
         raise Exception(f"ChatRecord with id {chat_record_id} not found")
 

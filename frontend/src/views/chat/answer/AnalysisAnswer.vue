@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import BaseAnswer from './BaseAnswer.vue'
+import { useAvatarRequest } from '@/components/assistant/useAvatarRequest'
 import { chatApi, ChatInfo, type ChatMessage, ChatRecord } from '@/api/chat.ts'
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import MdComponent from '@/views/chat/component/MdComponent.vue'
 const props = withDefaults(
   defineProps<{
@@ -21,6 +22,7 @@ const props = withDefaults(
 )
 
 const emits = defineEmits([
+  'avatarState',
   'finish',
   'error',
   'stop',
@@ -76,6 +78,8 @@ const _loading = computed({
   },
 })
 
+const avatarRequest = useAvatarRequest(event => emits('avatarState', event))
+watch(() => props.currentChat, () => avatarRequest.cancel())
 const stopFlag = ref(false)
 const sendMessage = async () => {
   stopFlag.value = false
@@ -92,11 +96,16 @@ const sendMessage = async () => {
   if (_currentChatId.value === undefined || currentRecord.analysis_record_id === undefined) {
     error = true
   }
-  if (error) return
+  if (error) { _loading.value = false; return }
+  const requestChat = _currentChat.value
+  const requestIndex = index.value
+  const run = avatarRequest.begin(_currentChatId.value, requestIndex,
+    () => _currentChat.value === requestChat && requestChat.records[requestIndex] === currentRecord)
 
   try {
-    const controller: AbortController = new AbortController()
+    const controller = run.controller
     const response = await chatApi.analysis(currentRecord.analysis_record_id, controller)
+    if (!run.current()) return
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
 
@@ -113,6 +122,7 @@ const sendMessage = async () => {
       }
 
       const { done, value } = await reader.read()
+      if (!run.current()) return
       if (done) {
         _loading.value = false
         break
@@ -138,6 +148,8 @@ const sendMessage = async () => {
               throw err
             }
 
+            if (!run.current()) return
+            run.event('analysis', data)
             if (data.code && data.code !== 200) {
               ElMessage({
                 message: data.msg,
@@ -151,7 +163,6 @@ const sendMessage = async () => {
             switch (data.type) {
               case 'id':
                 currentRecord.id = data.id
-                _currentChat.value.records[index.value].id = data.id
                 break
               case 'info':
                 console.info(data.msg)
@@ -159,12 +170,12 @@ const sendMessage = async () => {
               case 'error':
                 currentRecord.error = data.content
                 emits('error', currentRecord.id)
-                break
+                return
               case 'analysis-result':
                 analysis_answer += data.content
                 analysis_answer_thinking += data.reasoning_content
-                _currentChat.value.records[index.value].analysis = analysis_answer
-                _currentChat.value.records[index.value].analysis_thinking = analysis_answer_thinking
+                currentRecord.analysis = analysis_answer
+                currentRecord.analysis_thinking = analysis_answer_thinking
                 break
               case 'analysis_finish':
                 emits('finish', currentRecord.id)
@@ -176,6 +187,8 @@ const sendMessage = async () => {
       }
     }
   } catch (error) {
+    if (!run.current()) return
+    run.update('error')
     if (!currentRecord.error) {
       currentRecord.error = ''
     }
@@ -186,10 +199,15 @@ const sendMessage = async () => {
     console.error('Error:', error)
     emits('error')
   } finally {
-    _loading.value = false
+    if (run.current()) {
+      run.end()
+      _loading.value = false
+    }
+    run.controller.abort()
   }
 }
 function stop() {
+  if (!avatarRequest.cancel()) return
   stopFlag.value = true
   _loading.value = false
   emits('stop')

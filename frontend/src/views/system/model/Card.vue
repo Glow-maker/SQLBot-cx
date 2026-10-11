@@ -58,13 +58,20 @@ defineExpose({ showErrorMask })
 <template>
   <div
     v-loading="!!errorMsg"
-    class="card"
+    class="model-card"
+    :class="{ 'is-default': isDefault }"
     :element-loading-text="errorMsg"
     element-loading-custom-class="model-card-loading"
   >
     <div class="name-icon">
-      <img :src="current_supplier?.icon" width="32px" height="32px" />
-      <span :title="name" class="name ellipsis">{{ name }}</span>
+      <img
+        v-if="current_supplier"
+        :src="current_supplier.icon"
+        :alt="current_supplier.name"
+        width="32"
+        height="32"
+      />
+      <span :title="name" class="name">{{ name }}</span>
       <span v-if="isDefault" class="default">{{ $t('model.default_model') }}</span>
     </div>
     <div class="type-value">
@@ -73,9 +80,9 @@ defineExpose({ showErrorMask })
         {{ modelType.startsWith('modelType.') ? $t(modelType) : modelType }}</span
       >
     </div>
-    <div class="type-value">
+    <div class="type-value base-model">
       <span class="type">{{ $t('model.basic_model') }}</span>
-      <span class="value"> {{ baseModel }}</span>
+      <span class="value" :title="baseModel">{{ baseModel }}</span>
     </div>
     <div class="methods">
       <el-tooltip
@@ -98,13 +105,13 @@ defineExpose({ showErrorMask })
         </el-icon>
         {{ $t('common.as_default_model') }}
       </el-button>
-      <el-button secondary @click="handleEdit">
+      <el-button type="primary" plain @click="handleEdit">
         <el-icon style="margin-right: 4px" size="16">
           <edit></edit>
         </el-icon>
         {{ $t('dashboard.edit') }}
       </el-button>
-      <el-button secondary @click="handleDel">
+      <el-button class="delete-action" text @click="handleDel">
         <el-icon style="margin-right: 4px" size="16">
           <delIcon></delIcon>
         </el-icon>
@@ -115,33 +122,49 @@ defineExpose({ showErrorMask })
 </template>
 
 <style lang="less" scoped>
-.card {
+.model-card {
+  box-sizing: border-box;
   width: 100%;
-  height: 176px;
-  border: 1px solid #dee0e3;
-  padding: 16px;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e0e6ef;
+  padding: 20px;
   border-radius: 12px;
-  &:hover {
-    box-shadow: 0px 6px 24px 0px #1f232914;
+  background: #fff;
+  &.is-default {
+    border-color: #abc8f5;
+  }
+  &:hover,
+  &:focus-within {
+    border-color: #8cb5ef;
+    box-shadow: 0 4px 14px #20385a0a;
   }
 
   .name-icon {
     display: flex;
-    align-items: center;
-    margin-bottom: 12px;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 18px;
+    img {
+      flex-shrink: 0;
+    }
     .name {
-      margin-left: 12px;
-      font-weight: 500;
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-weight: 600;
       font-size: 16px;
       line-height: 24px;
-      max-width: calc(100% - 115px);
     }
     .default {
       margin-left: auto;
-      background: var(--ed-color-primary-33, #409eff33);
-      padding: 0 4px;
-      border-radius: 4px;
-      color: var(--ed-color-primary-dark-2);
+      flex-shrink: 0;
+      background: #edf4ff;
+      padding: 2px 8px;
+      border-radius: 6px;
+      color: #2463d6;
       font-weight: 400;
       font-size: 12px;
       line-height: 20px;
@@ -151,35 +174,57 @@ defineExpose({ showErrorMask })
   .type-value {
     margin-top: 8px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     font-weight: 400;
     font-size: 14px;
     line-height: 22px;
     .type {
+      flex-shrink: 0;
       color: #646a73;
     }
 
     .value {
       margin-left: 16px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .base-model {
+    display: block;
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    background: #f6f8fb;
+    .type {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .value {
+      display: block;
+      margin: 0;
+      font-size: 13px;
+      line-height: 20px;
     }
   }
 
   .methods {
-    margin-top: 16px;
+    margin-top: auto;
+    padding-top: 20px;
+    gap: 8px;
+    flex-wrap: wrap;
     align-items: center;
-    display: none;
-
-    .divide {
-      height: 14px;
-      width: 1px;
-      background-color: #1f232926;
-      margin: 0 12px;
+    display: flex;
+    :deep(.ed-button + .ed-button) {
+      margin-left: 0;
     }
-  }
-
-  &:hover {
-    .methods {
-      display: flex;
+    .delete-action {
+      margin-left: auto !important;
+      color: #646a73;
+    }
+    .delete-action:hover {
+      color: var(--ed-color-danger);
     }
   }
   :deep(.model-card-loading) {

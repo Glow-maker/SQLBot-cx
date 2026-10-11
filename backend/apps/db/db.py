@@ -3,6 +3,7 @@ import json
 import os
 import platform
 import urllib.parse
+from time import monotonic
 from datetime import datetime, date, time, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -540,7 +541,9 @@ def convert_value(value, datetime_format='space'):
         return value
 
 
-def exec_sql(ds: CoreDatasource | AssistantOutDsSchema, sql: str, origin_column=False):
+def exec_sql(ds: CoreDatasource | AssistantOutDsSchema, sql: str, origin_column=False, deadline=None):
+    if deadline is not None and monotonic() >= deadline:
+        raise TimeoutError("问数已超时，未执行查询")
     while sql.endswith(';'):
         sql = sql[:-1]
     # check execute sql only contain read operations
@@ -550,6 +553,13 @@ def exec_sql(ds: CoreDatasource | AssistantOutDsSchema, sql: str, origin_column=
     db = DB.get_db(ds.type)
     if db.connect_type == ConnectType.sqlalchemy:
         with get_session(ds) as session:
+            if deadline is not None:
+                remaining_ms = int((deadline-monotonic())*1000)
+                if remaining_ms <= 0:
+                    raise TimeoutError("问数已超时，未执行查询")
+                if equals_ignore_case(ds.type, 'pg', 'postgresql'):
+                    session.execute(text("SET LOCAL statement_timeout = " + str(remaining_ms)))
+                    session.execute(text("SET TRANSACTION READ ONLY"))
             with session.execute(text(sql)) as result:
                 try:
                     columns = result.keys()._keys if origin_column else [item.lower() for item in result.keys()._keys]

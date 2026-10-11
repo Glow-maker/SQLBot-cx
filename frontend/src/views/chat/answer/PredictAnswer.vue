@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import BaseAnswer from './BaseAnswer.vue'
+import { useAvatarRequest } from '@/components/assistant/useAvatarRequest'
 import { chatApi, ChatInfo, type ChatMessage, ChatRecord } from '@/api/chat.ts'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MdComponent from '@/views/chat/component/MdComponent.vue'
 import ChartBlock from '@/views/chat/chat-block/ChartBlock.vue'
 
@@ -25,6 +26,7 @@ const props = withDefaults(
 )
 
 const emits = defineEmits([
+  'avatarState',
   'finish',
   'error',
   'scrollBottom',
@@ -81,6 +83,8 @@ const _loading = computed({
   },
 })
 
+const avatarRequest = useAvatarRequest(event => emits('avatarState', event))
+watch(() => props.currentChat, () => avatarRequest.cancel())
 const stopFlag = ref(false)
 const sendMessage = async () => {
   stopFlag.value = false
@@ -97,11 +101,16 @@ const sendMessage = async () => {
   if (_currentChatId.value === undefined || currentRecord.predict_record_id === undefined) {
     error = true
   }
-  if (error) return
+  if (error) { _loading.value = false; return }
+  const requestChat = _currentChat.value
+  const requestIndex = index.value
+  const run = avatarRequest.begin(_currentChatId.value, requestIndex,
+    () => _currentChat.value === requestChat && requestChat.records[requestIndex] === currentRecord)
 
   try {
-    const controller: AbortController = new AbortController()
+    const controller = run.controller
     const response = await chatApi.predict(currentRecord.predict_record_id, controller)
+    if (!run.current()) return
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
 
@@ -118,6 +127,7 @@ const sendMessage = async () => {
       }
 
       const { done, value } = await reader.read()
+      if (!run.current()) return
       if (done) {
         _loading.value = false
         break
@@ -143,6 +153,8 @@ const sendMessage = async () => {
               throw err
             }
 
+            if (!run.current()) return
+            run.event('predict', data)
             if (data.code && data.code !== 200) {
               ElMessage({
                 message: data.msg,
@@ -155,7 +167,6 @@ const sendMessage = async () => {
             switch (data.type) {
               case 'id':
                 currentRecord.id = data.id
-                _currentChat.value.records[index.value].id = data.id
                 break
               case 'info':
                 console.info(data.msg)
@@ -163,19 +174,19 @@ const sendMessage = async () => {
               case 'error':
                 currentRecord.error = data.content
                 emits('error', currentRecord.id)
-                break
+                return
               case 'predict-result':
                 predict_answer += data.reasoning_content
                 predict_content += data.content
-                _currentChat.value.records[index.value].predict = predict_answer
-                _currentChat.value.records[index.value].predict_content = predict_content
+                currentRecord.predict = predict_answer
+                currentRecord.predict_content = predict_content
                 break
               case 'predict-failed':
                 emits('error', currentRecord.id)
                 break
               case 'predict-success':
                 //currentChat.value.records[_index].predict_data = data.content
-                getChatPredictData(_currentChat.value.records[index.value].id)
+                getChatPredictData(currentRecord.id)
                 emits('finish', currentRecord.id)
                 break
               case 'predict_finish':
@@ -188,6 +199,8 @@ const sendMessage = async () => {
       }
     }
   } catch (error) {
+    if (!run.current()) return
+    run.update('error')
     if (!currentRecord.error) {
       currentRecord.error = ''
     }
@@ -198,7 +211,11 @@ const sendMessage = async () => {
     console.error('Error:', error)
     emits('error')
   } finally {
-    _loading.value = false
+    if (run.current()) {
+      run.end()
+      _loading.value = false
+    }
+    run.controller.abort()
   }
 }
 
@@ -250,6 +267,7 @@ function getChatData(recordId?: number) {
 }
 
 function stop() {
+  if (!avatarRequest.cancel()) return
   stopFlag.value = true
   _loading.value = false
   emits('stop')

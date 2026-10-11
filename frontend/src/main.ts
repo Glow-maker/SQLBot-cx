@@ -17,13 +17,15 @@ let app = null as any
 
 function render(props = {} as any) {
   const { container, loginState, sendToMain } = props
+  window.__SQLBOT_GET_LOGIN_STATE__ = props.getLoginState
+  window.__SQLBOT_REFRESH_LOGIN_STATE__ = props.refreshLoginState
   if (typeof sendToMain === 'function') {
     window.__SQLBOT_SEND_TO_MAIN__ = sendToMain
   }
   // 处理从基座传递的登录态
   if (loginState && loginState.token) {
     // 将登录态存储到全局对象中，供 request.ts 使用
-    window.__INJECTED_LOGIN_STATE__ = { token: loginState.token }
+    window.__INJECTED_LOGIN_STATE__ = { token: loginState.token, tenantId: loginState.tenantId }
     // 同时存储到缓存中
     wsCache.set('user.token', loginState.token)
   }
@@ -65,12 +67,16 @@ renderWithQiankun({
     // 当基座登录态更新时，同步更新子应用的登录态
     if (props.loginState && props.loginState.token) {
       // 更新全局对象中的登录态
-      window.__INJECTED_LOGIN_STATE__ = { token: props.loginState.token }
+      window.__INJECTED_LOGIN_STATE__ = { token: props.loginState.token, tenantId: props.loginState.tenantId }
       // 同时更新缓存中的登录态
       wsCache.set('user.token', props.loginState.token)
+      window.dispatchEvent(new Event('sqlbot:identity-change'))
     }
   },
   unmount() {
+    delete window.__SQLBOT_GET_LOGIN_STATE__
+    delete window.__SQLBOT_REFRESH_LOGIN_STATE__
+    delete window.__INJECTED_LOGIN_STATE__
     if (app) {
       app.unmount()
       app = null

@@ -1,0 +1,12 @@
+ARG BUILDER_IMAGE=sqlbot-cx-ui-builder-test:node20
+FROM ${BUILDER_IMAGE} AS build
+WORKDIR /tmp/frontend
+COPY frontend ./
+ENV VITE_API_BASE_URL=/api/v1
+ENV VITE_PUBLIC_BASE_URL=/sqlbot-app/
+ENV VITE_PLATFORM_LOGICAL_DATASOURCE_ENABLED=true
+ENV VITE_SHOW_REASONING=false
+RUN npm ci --no-audit --no-fund && npm run build && npm run test:assistant && node --test tests/platform-session.test.cjs tests/admin-access.test.cjs tests/admin-navigation.test.cjs tests/index-sync.test.cjs
+FROM nginx:1.27-alpine
+COPY --from=build /tmp/frontend/dist /usr/share/nginx/html/sqlbot
+COPY deploy/dev-1/frontend.conf /etc/nginx/conf.d/default.conf

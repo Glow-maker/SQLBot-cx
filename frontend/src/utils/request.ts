@@ -54,6 +54,7 @@ export interface RequestError<T = any> extends Error {
 class HttpService {
   private instance: AxiosInstance
   private cancelTokenSource: CancelTokenSource
+  private platformRefresh: Promise<void> | null = null
 
   constructor(config?: AxiosRequestConfig) {
     this.cancelTokenSource = axios.CancelToken.source()
@@ -98,10 +99,18 @@ class HttpService {
         // Add auth token
         let token = wsCache.get('user.token')
         // 在微前端模式下，优先从全局对象获取token（如果基座设置了全局token）
-        if (qiankunWindow.__POWERED_BY_QIANKUN__ && window?.__INJECTED_LOGIN_STATE__?.token) {
-          token = window.__INJECTED_LOGIN_STATE__.token
+        if (qiankunWindow.__POWERED_BY_QIANKUN__) {
+          const loginState = window.__SQLBOT_GET_LOGIN_STATE__
+            ? window.__SQLBOT_GET_LOGIN_STATE__()
+            : window.__INJECTED_LOGIN_STATE__
+          token = loginState?.token
           // 同步到缓存中
-          wsCache.set('user.token', token)
+          if (token) wsCache.set('user.token', token)
+          else {
+            wsCache.delete('user.token')
+            config.headers?.delete('X-SQLBOT-TOKEN')
+          }
+          if (loginState?.tenantId != null) config.headers['tenant-id'] = String(loginState.tenantId)
         }
         if (token && config.headers) {
           config.headers['X-SQLBOT-TOKEN'] = `Bearer ${token}`
@@ -189,8 +198,27 @@ class HttpService {
         return response.data
       },
       async (error: AxiosError) => {
-        const config = error.config as FullRequestConfig & { __retryCount?: number }
+        const config = error.config as FullRequestConfig & { __retryCount?: number; __platformAuthRetried?: boolean }
         const requestOptions = config?.requestOptions || {}
+
+        if (error.response?.status === 401 && config && !config.__platformAuthRetried &&
+          qiankunWindow.__POWERED_BY_QIANKUN__ && window.__SQLBOT_REFRESH_LOGIN_STATE__) {
+          config.__platformAuthRetried = true
+          try {
+            if (!this.platformRefresh) {
+              this.platformRefresh = Promise.resolve().then(() => window.__SQLBOT_REFRESH_LOGIN_STATE__!())
+                .then((state) => {
+                  if (!state.token) throw new Error('中台登录已失效')
+                  window.__INJECTED_LOGIN_STATE__ = { token: state.token, tenantId: state.tenantId }
+                  wsCache.set('user.token', state.token)
+                }).finally(() => { this.platformRefresh = null })
+            }
+            await this.platformRefresh
+            return this.instance.request(config)
+          } catch {
+            // 基座校验或续期失败，沿用下方重新登录处理。
+          }
+        }
 
         // Retry logic for specific status codes
         const shouldRetry =
@@ -325,16 +353,19 @@ class HttpService {
     return this.request({ ...config, method: 'POST', url, data })
   }
 
-  public async fetchStream(url: string, data?: any, controller?: AbortController): Promise<any> {
+  public async fetchStream(url: string, data?: any, controller?: AbortController, platformRetried = false): Promise<any> {
     let token = wsCache.get('user.token')
-    // 在微前端模式下，优先从全局对象获取token（如果基座设置了全局token）
-    if (qiankunWindow.__POWERED_BY_QIANKUN__ && window?.__INJECTED_LOGIN_STATE__?.token) {
-      token = window.__INJECTED_LOGIN_STATE__.token
-      // 同步到缓存中
-      wsCache.set('user.token', token)
-    }
     const heads: any = {
       'Content-Type': 'application/json',
+    }
+    if (qiankunWindow.__POWERED_BY_QIANKUN__) {
+      const loginState = window.__SQLBOT_GET_LOGIN_STATE__
+        ? window.__SQLBOT_GET_LOGIN_STATE__()
+        : window.__INJECTED_LOGIN_STATE__
+      token = loginState?.token
+      if (token) wsCache.set('user.token', token)
+      else wsCache.delete('user.token')
+      if (loginState?.tenantId != null) heads['tenant-id'] = String(loginState.tenantId)
     }
     if (token) {
       heads['X-SQLBOT-TOKEN'] = `Bearer ${token}`
@@ -372,12 +403,30 @@ class HttpService {
     } */
 
     const real_url = import.meta.env.VITE_API_BASE_URL
-    return fetch(real_url + url, {
+    const response = await fetch(real_url + url, {
       method: 'POST',
       headers: heads,
       body: JSON.stringify(data),
       signal: controller?.signal,
     })
+    if (response.status === 401 && !platformRetried && !assistantStore.getToken &&
+      qiankunWindow.__POWERED_BY_QIANKUN__ && window.__SQLBOT_REFRESH_LOGIN_STATE__) {
+      try {
+        if (!this.platformRefresh) {
+          this.platformRefresh = Promise.resolve().then(() => window.__SQLBOT_REFRESH_LOGIN_STATE__!())
+            .then((state) => {
+              if (!state.token) throw new Error('中台登录已失效')
+              window.__INJECTED_LOGIN_STATE__ = { token: state.token, tenantId: state.tenantId }
+              wsCache.set('user.token', state.token)
+            }).finally(() => { this.platformRefresh = null })
+        }
+        await this.platformRefresh
+        return this.fetchStream(url, data, controller, true)
+      } catch {
+        return response
+      }
+    }
+    return response
   }
 
   // PUT request

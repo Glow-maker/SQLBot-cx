@@ -22,6 +22,11 @@ CurrentUser = Annotated[UserInfoDTO, Depends(get_current_user)]
 
 async def get_current_assistant(request: Request) -> AssistantHeader | None:
     base_assistant = request.state.assistant if hasattr(request.state, "assistant") else None
+    from common.core.config import settings
+    if settings.PLATFORM_DATASOURCE_ENABLED:
+        # Platform credentials come from authenticated middleware, never from
+        # browser-supplied assistant certificate overrides.
+        return base_assistant
     if request.headers.get("X-SQLBOT-ASSISTANT-CERTIFICATE"):
         entry_certificate = request.headers['X-SQLBOT-ASSISTANT-CERTIFICATE']
         base_assistant.certificate = unquote(base64.b64decode(entry_certificate).decode('utf-8'))

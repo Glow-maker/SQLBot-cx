@@ -1,5 +1,7 @@
 FROM sqlbot-cx-runtime:latest
 
+# Reuse runtime dependencies while always installing the current application code.
+COPY backend /opt/sqlbot/app
 COPY deploy/start-host.sh /opt/sqlbot/app/start.sh
 
 # Optional local model override. Keep deploy/models present so this COPY never fails.
@@ -7,6 +9,6 @@ COPY deploy/start-host.sh /opt/sqlbot/app/start.sh
 COPY deploy/models /opt/sqlbot/models
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-  CMD curl -f http://127.0.0.1:8011/openapi.json || exit 1
+  CMD curl -f http://127.0.0.1:${BACKEND_PORT:-8011}/api/v1/openapi.json || exit 1
 
 ENTRYPOINT ["sh", "/opt/sqlbot/app/start.sh"]

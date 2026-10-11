@@ -109,6 +109,7 @@ const data = computed(() => {
 })
 
 const chartRef = ref()
+const returnedRows = computed(() => Array.isArray(data.value) ? data.value.length : undefined)
 
 const chartObject = computed<{
   type: ChartTypes
@@ -360,8 +361,9 @@ watch(
     :class="{ 'full-screen': enlarge }"
   >
     <div class="header-bar">
-      <div class="title">
-        {{ chartObject.title }}
+      <div class="result-heading">
+        <div class="title">{{ chartObject.title || '查询结果' }}</div>
+        <div class="result-count" role="status">{{ loadingData ? '正在加载结果' : returnedRows === undefined ? '等待查询结果' : `${isPredict ? '当前展示' : '本次返回'} ${returnedRows} 行` }}<span v-if="!isPredict && dataObject.limit"> · 查询上限 {{ dataObject.limit }} 行</span></div>
       </div>
       <div class="buttons-bar">
         <div class="chart-select-container">
@@ -382,7 +384,7 @@ watch(
             placement="top"
           >
             <el-button
-              class="tool-btn"
+              class="tool-btn labeled-tool"
               :class="{ 'chart-active': currentChartType === 'table' }"
               text
               @click="changeTable"
@@ -390,16 +392,18 @@ watch(
               <el-icon size="16">
                 <ICON_TABLE />
               </el-icon>
+              <span>数据明细</span>
             </el-button>
           </el-tooltip>
         </div>
 
         <div v-if="message?.record?.sql">
           <el-tooltip effect="dark" :offset="8" :content="t('chat.show_sql')" placement="top">
-            <el-button class="tool-btn" text @click="showSql">
+            <el-button class="tool-btn labeled-tool" text @click="showSql">
               <el-icon size="16">
                 <icon_sql_outlined />
               </el-icon>
+              <span>SQL</span>
             </el-button>
           </el-tooltip>
         </div>
@@ -491,6 +495,7 @@ watch(
     </div>
 
     <template v-if="message?.record?.chart">
+      <div class="result-view-label">{{ chartType === 'table' ? '数据明细' : '图表展示' }}<span>基于本次查询返回的数据</span></div>
       <div class="chart-block">
         <DisplayChartBlock
           :id="chartId"
@@ -651,7 +656,7 @@ watch(
 
     .header-bar {
       border-bottom: 1px solid rgba(31, 35, 41, 0.15);
-      height: 55px;
+      min-height: 72px;
       padding: 16px 24px;
     }
 
@@ -659,13 +664,14 @@ watch(
       margin: unset;
       padding: 16px;
 
-      height: calc(100vh - 56px);
+      height: calc(100vh - 114px);
     }
   }
 
   .header-bar {
-    height: 32px;
+    min-height: 48px;
     display: flex;
+    flex-wrap: wrap;
 
     align-items: center;
     flex-direction: row;
@@ -718,6 +724,8 @@ watch(
       }
     }
 
+    .result-heading { flex: 1 1 180px; min-width: 0; }
+    .result-count { font-size: 12px; line-height: 20px; color: #646a73; font-variant-numeric: tabular-nums; }
     .title {
       flex: 1;
       white-space: nowrap;
@@ -725,7 +733,7 @@ watch(
       text-overflow: ellipsis;
 
       color: rgba(31, 35, 41, 1);
-      font-weight: 500;
+      font-weight: 600;
       font-size: 16px;
       line-height: 24px;
     }
@@ -735,7 +743,9 @@ watch(
       flex-direction: row;
       align-items: center;
 
-      gap: 16px;
+      gap: 10px;
+      flex-wrap: wrap;
+      .labeled-tool { width: auto; padding: 0 7px; font-size: 12px; gap: 4px; }
 
       .divider {
         width: 1px;
@@ -784,14 +794,17 @@ watch(
     height: 352px;
     width: 100%;
 
-    margin-top: 16px;
+    margin-top: 8px;
   }
+  .result-view-label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #edf0f5; font-weight: 600; font-size: 13px; color: #344054; }
+  .result-view-label span { font-size: 12px; font-weight: 400; color: #667085; }
   .over-limit-hint {
     min-height: 24px;
     line-height: 24px;
     font-size: 14px;
   }
 }
+@media (max-width: 600px) { .chart-component-container { padding: 12px; } .chart-component-container .header-bar { gap: 8px; } .chart-component-container .header-bar .buttons-bar { gap: 6px; } }
 
 .sql-block {
   position: relative;

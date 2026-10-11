@@ -1,0 +1,7 @@
+# 在原部署目录、原 Compose 项目中使用。不要复制数据卷或数据库定义。
+# 服务名必须与原 Compose 相同；六月包默认是以下两个名称。
+services:
+  sqlbot-backend:
+    image: sqlbot-cx-backend-host:intranet-20260909
+  sqlbot-frontend:
+    image: sqlbot-cx-frontend:intranet-20260909

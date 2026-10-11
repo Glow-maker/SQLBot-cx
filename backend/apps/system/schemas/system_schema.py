@@ -163,6 +163,7 @@ class UserWsOption(UserWs):
 class AssistantFieldSchema(BaseModel):
     id: Optional[int] = None
     name: Optional[str] = None
+    alias: Optional[str] = None
     type: Optional[str] = None
     comment: Optional[str] = None
 

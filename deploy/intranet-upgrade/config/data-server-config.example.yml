@@ -1,0 +1,5 @@
+# 只将以下小节合并到现场现有profile/Nacos配置。
+# 此文件不能替换完整application.yml。
+data:
+  sqlbot:
+    index-api-base-url: http://<SQLBot服务器>:8011/api/v1

@@ -112,7 +112,9 @@ class AssistantOutDs:
         self.ds_list = None
         self.certificate = assistant.certificate
         self.request_origin = assistant.request_origin
+        started = time.perf_counter()
         self.get_ds_from_api()
+        self.metadata_load_ms = (time.perf_counter() - started) * 1000
 
     # @cache(namespace=CacheNamespace.EMBEDDED_INFO, cacheName=CacheName.ASSISTANT_DS, keyExpression="current_user.id")
     def get_ds_from_api(self):
@@ -230,17 +232,20 @@ class AssistantOutDs:
             return str(key)
         return f"datasource:{getattr(ds, 'id', '')}"
 
-    # 同物理源 key 的判断是 type|host|port 三者都相同，优先 physicalDatasourceKey 字段（如果存在且非空），否则构造一个基于 type|host|port 的 key，仍然不行就退化成 datasource:id 作为 key。
+    # 同一执行连接必须匹配类型、主机、端口、数据库和查询账号；信息不完整时按登记数据源隔离。
     @staticmethod
     def _build_physical_datasource_key(ds_dict: dict, ds_id: Any) -> str:
-        key = ds_dict.get("physicalDatasourceKey") or ds_dict.get("physical_datasource_key")
-        if key is not None and str(key).strip() != "":
-            return str(key).strip()
+        import hashlib
         ds_type = str(ds_dict.get("type") or ds_dict.get("type_name") or "").strip().lower()
         host = str(ds_dict.get("host") or "").strip().lower()
         port = str(ds_dict.get("port") or "").strip()
-        if ds_type and host and port:
-            return f"{ds_type}|{host}|{port}"
+        database = str(ds_dict.get('dataBase') or '').strip()
+        principal = str(ds_dict.get('user') or '').strip()
+        if ds_type and host and port and database and principal:
+            # A shared PG instance is not a shared query connection. Different
+            # databases or principals cannot participate in the same SQL.
+            identity = json.dumps([ds_type, host, port, database, principal])
+            return 'source:' + hashlib.sha256(identity.encode()).hexdigest()
         return f"datasource:{ds_id}"
 
     def get_physical_group_ds(self, ds: AssistantOutDsSchema, physical_datasource_key: str = None) -> list[AssistantOutDsSchema]:
@@ -363,6 +368,10 @@ class AssistantOutDsFactory:
 
     @staticmethod
     def get_instance(assistant: AssistantHeader) -> AssistantOutDs:
+        config = json.loads(assistant.configuration or "{}")
+        if isinstance(config, dict) and config.get("platform_virtual"):
+            # Current catalog is authoritative for recall, including immediately offlined tables.
+            return AssistantOutDs(assistant)
         ttl = settings.PLATFORM_DATASOURCE_CACHE_TTL_SECONDS
         if not ttl or ttl <= 0:
             return AssistantOutDs(assistant)

@@ -19,6 +19,7 @@ interface UserState {
   time: number
   weight: number
   origin: number
+  adminAuthorized: boolean
   platformInfo: any | null
   [key: string]: string | number | any | null
 }
@@ -36,6 +37,7 @@ export const UserStore = defineStore('user', {
       time: 0,
       weight: 0,
       origin: 0,
+      adminAuthorized: false,
       platformInfo: null,
     }
   },
@@ -65,7 +67,7 @@ export const UserStore = defineStore('user', {
       return this.time
     },
     isAdmin(): boolean {
-      return this.uid === '1'
+      return this.adminAuthorized
     },
     getWeight(): number {
       return this.weight
@@ -74,7 +76,7 @@ export const UserStore = defineStore('user', {
       return this.origin
     },
     isSpaceAdmin(): boolean {
-      return this.uid === '1' || !!this.weight
+      return this.isAdmin || !!this.weight
     },
     getPlatformInfo(): any | null {
       return this.platformInfo
@@ -117,6 +119,7 @@ export const UserStore = defineStore('user', {
     async info() {
       const res: any = await AuthApi.info()
       const res_data = res || {}
+      this.adminAuthorized = res_data.isAdmin === true
 
       const keys = [
         'uid',

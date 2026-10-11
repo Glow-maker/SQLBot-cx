@@ -47,6 +47,10 @@ export default defineConfig(({ mode }: any): any => {
     build: {
       chunkSizeWarningLimit: 2000,
       rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          assistantPreview: path.resolve(__dirname, 'assistant-preview.html'),
+        },
         output: {
           manualChunks: {
             'element-plus-secondary': ['element-plus-secondary'],
@@ -67,6 +71,14 @@ export default defineConfig(({ mode }: any): any => {
         'Access-Control-Allow-Origin': '*',
       },
       proxy: {
+        '/api/v1': {
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8011',
+          changeOrigin: true,
+        },
+        '/images': {
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8012',
+          changeOrigin: true,
+        },
         '/admin-api': {
           target: env.VITE_PLATFORM_BASE_URL || 'http://127.0.0.1:38080',
           changeOrigin: true,

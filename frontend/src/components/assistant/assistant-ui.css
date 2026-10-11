@@ -1,0 +1,46 @@
+/* Shared assistant surfaces. Keep the host's Element Plus theme and brand accent. */
+.assistant-surface {
+  --assistant-accent: var(--ed-color-primary, #3370ff);
+  --assistant-ink: var(--ed-text-color-primary, #202b40);
+  --assistant-muted: var(--ed-text-color-regular, #58657a);
+  --assistant-surface: var(--ed-bg-color, #fdfefe);
+  --assistant-soft: var(--ed-fill-color-light, #f3f6fa);
+  --assistant-border: var(--ed-border-color-light, #dde4ed);
+  --assistant-tint: color-mix(in srgb, var(--assistant-accent) 7%, var(--assistant-surface));
+  --assistant-focus: color-mix(in srgb, var(--assistant-accent) 55%, var(--assistant-ink));
+  color: var(--assistant-ink);
+}
+.assistant-surface :where(button, summary, select, textarea, input):focus-visible {
+  outline: 2px solid var(--assistant-focus);
+  outline-offset: 4px;
+}
+.assistant-surface :where(button, summary) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The standalone lab follows system appearance; the product inherits its host theme. */
+.assistant-lab {
+  --assistant-character: #3370ff;
+  --assistant-accent: #3370ff;
+  --assistant-ink: #202b40;
+  --assistant-muted: #58657a;
+  --assistant-surface: #fdfefe;
+  --assistant-soft: #f3f6fa;
+  --assistant-border: #dde4ed;
+  --assistant-focus: #2454bf;
+  --assistant-tint: #edf3ff;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  .assistant-lab {
+    --assistant-accent: #83a8ff;
+    --assistant-ink: #e8edf6;
+    --assistant-muted: #adb9cc;
+    --assistant-surface: #171e2b;
+    --assistant-soft: #111723;
+    --assistant-border: #354156;
+    --assistant-focus: #a4bfff;
+    --assistant-tint: #202e48;
+    color-scheme: dark;
+  }
+}

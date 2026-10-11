@@ -1,6 +1,9 @@
 import { request } from '@/utils/request'
 
 export const datasourceApi = {
+  questionStarters: (signal?: AbortSignal) => request.get('/datasource/platform/question-starters', {
+    signal, timeout: 20000, requestOptions: { customError: true },
+  }),
   check: (data: any) => request.post('/datasource/check', data),
   check_by_id: (id: any) => request.get(`/datasource/check/${id}`),
   relationGet: (id: any) => request.post(`/table_relation/get/${id}`),

@@ -8,7 +8,7 @@
   >
     <icon_sidebar_outlined></icon_sidebar_outlined>
   </el-icon>
-  <el-container class="chat-container no-padding">
+  <el-container class="chat-container no-padding assistant-surface" data-assistant-surface>
     <el-aside
       v-if="(isCompletePage || pageEmbedded) && chatListSideBarShow"
       class="chat-container-left"
@@ -31,7 +31,7 @@
     </el-aside>
 
     <div
-      v-if="(!isCompletePage && !pageEmbedded) || !chatListSideBarShow"
+      v-if="(!isCompletePage && !pageEmbedded) || !chatListSideBarShow || narrowLayout"
       class="hidden-sidebar-btn"
       :class="{
         'assistant-popover-sidebar': !isCompletePage && !pageEmbedded,
@@ -111,16 +111,15 @@
           'assistant-chat-main': !isCompletePage && !pageEmbedded,
         }"
       >
+        <div class="assistant-appearance-bar">
+          <AvatarAppearance v-model:variant="avatarVariant" v-model:animated="avatarAnimated" v-model:idle-motion="avatarIdleMotion" />
+        </div>
         <div v-if="computedMessages.length == 0 && !loading" class="welcome-content-block">
           <div class="welcome-content">
+            <AssistantCompanion class="welcome-avatar" :variant="avatarVariant" :animated="avatarAnimated" :idle-motion="avatarIdleMotion" :engaged="inputFocused" />
             <template v-if="isCompletePage">
               <div class="greeting">
-                <img v-if="loginBg" height="32" width="32" :src="loginBg" alt="" />
-                <el-icon v-else size="32"
-                  ><custom_small v-if="appearanceStore.themeColor !== 'default'"></custom_small>
-                  <LOGO_fold v-else></LOGO_fold
-                ></el-icon>
-                {{ appearanceStore.pc_welcome ?? '你好，我是 SQLBot' }}
+                {{ pcWelcome }}
               </div>
               <div class="sub">
                 {{
@@ -131,17 +130,6 @@
             </template>
 
             <div v-else class="assistant-desc">
-              <img
-                v-if="logoAssistant"
-                :src="logoAssistant"
-                class="logo"
-                width="30px"
-                height="30px"
-                alt=""
-              />
-              <el-icon v-else size="32">
-                <logo_fold />
-              </el-icon>
               <div class="i-am">{{ welcome }}</div>
               <div class="i-can">{{ welcomeDesc }}</div>
             </div>
@@ -160,22 +148,13 @@
               </span>
               {{ t('qa.start_sqlbot') }}
             </el-button>
+            <QuestionStarters v-if="logicalDatasourceEnabled || isInQiankun || (!isCompletePage && !selectAssistantDs)" :platform="logicalDatasourceEnabled || isInQiankun" @select="fillQuestionTemplate" />
           </div>
         </div>
         <div v-else-if="computedMessages.length == 0 && loading" class="welcome-content-block">
-          <div style="display: flex; align-items: center; height: 30px">
-            <img
-              v-if="logoAssistant || loginBg"
-              height="30"
-              width="30"
-              :src="logoAssistant ? logoAssistant : loginBg"
-              alt=""
-            />
-            <el-icon v-else size="30"
-              ><custom_small v-if="appearanceStore.themeColor !== 'default'"></custom_small>
-              <LOGO_fold v-else></LOGO_fold
-            ></el-icon>
-            <span style="margin-left: 12px">{{ appearanceStore.name }}</span>
+          <div class="welcome-content">
+            <AssistantAvatar class="welcome-avatar" :variant="avatarVariant" :size="112" :animated="avatarAnimated" idle-motion="calm" :state="isTyping ? 'thinking' : 'idle'" />
+            <span>{{ isTyping ? '正在处理' : '正在加载' }}</span>
           </div>
         </div>
         <el-scrollbar
@@ -195,6 +174,9 @@
             <template v-for="(message, _index) in computedMessages" :key="_index">
               <ChatRow
                 :logo-assistant="logoAssistant"
+                :avatar-variant="avatarVariant"
+                :avatar-state="avatarFor(message)?.state ?? 'idle'"
+                :avatar-animated="avatarAnimated && !!avatarFor(message) && (isActiveState(avatarFor(message)!.state) || avatarFor(message)!.state === 'success')"
                 :current-chat="currentChat"
                 :msg="message"
                 :hide-avatar="message.first_chat"
@@ -218,6 +200,7 @@
                 />
                 <template v-if="message.role === 'assistant' && !message.first_chat">
                   <ChartAnswer
+                    @avatar-state="onAvatarState"
                     v-if="
                       (message?.record?.analysis_record_id === undefined ||
                         message?.record?.analysis_record_id === null) &&
@@ -318,6 +301,7 @@
                     </template>
                   </ChartAnswer>
                   <AnalysisAnswer
+                    @avatar-state="onAvatarState"
                     v-if="
                       message?.record?.analysis_record_id !== undefined &&
                       message?.record?.analysis_record_id !== null
@@ -343,6 +327,7 @@
                     </template>
                   </AnalysisAnswer>
                   <PredictAnswer
+                    @avatar-state="onAvatarState"
                     v-if="
                       message?.record?.predict_record_id !== undefined &&
                       message?.record?.predict_record_id !== null
@@ -384,7 +369,7 @@
         "
         class="chat-footer"
       >
-        <div class="input-wrapper" @click="clickInput">
+        <div class="input-wrapper" :class="{ 'has-datasource': (isCompletePage || selectAssistantDs) && !logicalDatasourceEnabled }" @click="clickInput">
           <div v-if="(isCompletePage || selectAssistantDs) && !logicalDatasourceEnabled" class="datasource">
             <template v-if="currentChat.datasource && currentChat.datasource_name">
               {{ t('qa.selected_datasource') }}:
@@ -424,6 +409,9 @@
             type="textarea"
             :autosize="{ minRows: 1, maxRows: 8.583 }"
             :placeholder="t('qa.question_placeholder')"
+            aria-label="输入问数问题"
+            @focus="inputFocused = true"
+            @blur="inputFocused = false"
             @keydown.enter.exact.prevent="($event: any) => sendMessage(undefined, $event)"
             @keydown.ctrl.enter.exact.prevent="handleCtrlEnter"
           />
@@ -432,7 +420,8 @@
             circle
             type="primary"
             class="input-icon"
-            :disabled="isTyping"
+            :disabled="isTyping || !inputMessage.trim()"
+            aria-label="发送问题"
             @click.stop="($event: any) => sendMessage(undefined, $event)"
           >
             <el-icon size="16">
@@ -440,6 +429,7 @@
             </el-icon>
           </el-button>
         </div>
+        <div class="composer-help"><span>{{ inputMessage.includes('[') ? '发送前，请替换模板中的方括号内容。' : '回答可能存在偏差，请结合 SQL 与数据核对。' }}</span><span>Enter 发送 · Ctrl + Enter 换行</span></div>
       </el-footer>
     </el-container>
 
@@ -453,7 +443,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, watch, ref, shallowRef } from 'vue'
+import AssistantAvatar from '@/components/assistant/AssistantAvatar.vue'
+import AssistantCompanion from '@/components/assistant/AssistantCompanion.vue'
+import QuestionStarters from '@/components/assistant/QuestionStarters.vue'
+import '@/components/assistant/assistant-ui.css'
+import AvatarAppearance from '@/components/assistant/AvatarAppearance.vue'
+import { useAvatarPreferences } from '@/components/assistant/useAvatarPreferences'
+import { acceptAvatarEvent, isActiveState, type AvatarEvent } from '@/components/assistant/model'
 import { qiankunWindow } from 'vite-plugin-qiankun/es/helper'
 import { Chat, chatApi, ChatInfo, type ChatMessage, ChatRecord } from '@/api/chat'
 import ChatRow from './ChatRow.vue'
@@ -470,17 +467,14 @@ import ChatToolBar from './ChatToolBar.vue'
 import { dsTypeWithImg } from '@/views/ds/js/ds-type'
 import { useI18n } from 'vue-i18n'
 import { find, forEach } from 'lodash-es'
-import custom_small from '@/assets/svg/logo-custom_small.svg'
-import LOGO_fold from '@/assets/LOGO-fold.svg'
 import icon_new_chat_outlined from '@/assets/svg/icon_new_chat_outlined.svg'
 import icon_sidebar_outlined from '@/assets/svg/icon_sidebar_outlined.svg'
 import icon_replace_outlined from '@/assets/svg/icon_replace_outlined.svg'
 import icon_screen_outlined from '@/assets/svg/icon_screen_outlined.svg'
 import icon_start_outlined from '@/assets/svg/icon_start_outlined.svg'
-import logo_fold from '@/assets/svg/logo-custom_small.svg'
 import icon_send_filled from '@/assets/svg/icon_send_filled.svg'
 import { useAssistantStore } from '@/stores/assistant'
-import { onClickOutside } from '@vueuse/core'
+import { onClickOutside, useMediaQuery } from '@vueuse/core'
 import { useAppearanceStoreWithOut } from '@/stores/appearance'
 import { useUserStore } from '@/stores/user'
 import { debounce } from 'lodash-es'
@@ -527,10 +521,16 @@ const { t } = useI18n()
 
 const chatConfig = useChatConfigStore()
 
+const narrowLayout = useMediaQuery('(max-width: 640px)')
 const isPhone = computed(() => {
-  return isMobile()
+  return isMobile() || narrowLayout.value
 })
 const inputMessage = ref('')
+const inputFocused = ref(false)
+function fillQuestionTemplate(question: string) {
+  inputMessage.value = question
+  nextTick(() => inputRef.value?.focus())
+}
 
 const chatListRef = ref()
 const innerRef = ref()
@@ -549,12 +549,52 @@ const scrollToBottom = debounce(() => {
 const loading = ref<boolean>(false)
 const chatList = ref<Array<ChatInfo>>([])
 const appearanceStore = useAppearanceStoreWithOut()
+const pcWelcome = computed(() => {
+  const configuredWelcome = appearanceStore.pc_welcome?.trim()
+  if (!configuredWelcome || ['你好，我是 SQLBot', '你好，我是SQLBot'].includes(configuredWelcome)) {
+    return '你好，我是智能问数'
+  }
+  return appearanceStore.pc_welcome
+})
 
 const currentChatId = ref<number | undefined>()
 const currentChat = ref<ChatInfo>(new ChatInfo())
 const isTyping = ref<boolean>(false)
-const loginBg = computed(() => {
-  return appearanceStore.getLogin
+const { variant: avatarVariant, animated: avatarAnimated, idleMotion: avatarIdleMotion } = useAvatarPreferences()
+const avatarEvent = shallowRef<AvatarEvent | null>(null)
+let avatarSuccessTimer: ReturnType<typeof setTimeout> | undefined
+function onAvatarState(event: AvatarEvent) {
+  const next = acceptAvatarEvent(avatarEvent.value, event, currentChatId.value)
+  if (next === avatarEvent.value) return
+  clearTimeout(avatarSuccessTimer)
+  avatarEvent.value = next
+  if (event.state === 'success') {
+    avatarSuccessTimer = setTimeout(() => {
+      if (avatarEvent.value?.requestId === event.requestId) {
+        avatarEvent.value = { ...event, state: 'idle' }
+      }
+    }, 800)
+  }
+  if (event.state === 'stopped' || event.state === 'error') {
+    loading.value = false
+    isTyping.value = false
+  }
+}
+function avatarFor(message: ChatMessage) {
+  const event = avatarEvent.value
+  return event && event.chatId === currentChatId.value && event.recordIndex === message.index
+    ? event : null
+}
+watch(currentChat, () => {
+  clearTimeout(avatarSuccessTimer)
+  avatarEvent.value = null
+})
+onBeforeUnmount(() => {
+  clearTimeout(avatarSuccessTimer)
+  stop()
+  clearInterval(scrollTime)
+  clearTimeout(scrollingTime)
+  scrollToBottom.cancel()
 })
 const computedMessages = computed<Array<ChatMessage>>(() => {
   const messages: Array<ChatMessage> = []
@@ -1393,7 +1433,8 @@ onMounted(() => {
 }
 
 .welcome-content-block {
-  height: 100%;
+  min-height: 100%;
+  padding: 20px 0;
   width: 100%;
 
   display: flex;
@@ -1539,3 +1580,5 @@ onMounted(() => {
   }
 }
 </style>
+
+<style scoped src="./chat-refinement.css"></style>

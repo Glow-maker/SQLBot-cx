@@ -32,7 +32,8 @@ from apps.data_training.models.data_training_model import SQLModel
 from common.core.config import settings # noqa
 #from apps.datasource.models.datasource import SQLModel
 
-target_metadata = SQLModel.metadata
+from apps.datasource.embedding.platform_models import Base as PlatformEmbeddingBase
+target_metadata = [SQLModel.metadata, PlatformEmbeddingBase.metadata]
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

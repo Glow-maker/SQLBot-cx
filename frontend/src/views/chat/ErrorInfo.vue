@@ -38,6 +38,7 @@ interface ParsedErrorMessage {
   type?: string
   gate?: string
   reason?: string
+  errorCode?: string
   datasourceId?: string | number
   deniedTables?: PermissionDeniedTable[]
   tables?: CrossSourceTable[]
@@ -64,6 +65,7 @@ const errorMessage = computed<ParsedErrorMessage>(() => {
       obj.type = json['type']
       obj.gate = json['gate']
       obj.reason = json['reason']
+      obj.errorCode = json['errorCode']
       obj.datasourceId = json['datasourceId']
       obj.deniedTables = Array.isArray(json['deniedTables']) ? json['deniedTables'] : []
       obj.tables = Array.isArray(json['tables']) ? json['tables'] : []
@@ -134,7 +136,14 @@ function showTraceBack() {
 <template>
   <div v-if="showBlock">
     <div
-      v-if="errorMessage.type === 'permission_denied'"
+      v-if="errorMessage.type === 'permission_denied' && (errorMessage.errorCode === 'authentication_expired' || errorMessage.errorCode === 'permission_service_error' || errorMessage.reason?.startsWith('permission_service_'))"
+      class="error-container permission-denied"
+    >
+      <div class="permission-title">{{ errorMessage.errorCode === 'authentication_expired' ? '登录状态已失效' : '权限服务暂不可用' }}</div>
+      <div class="permission-desc">{{ errorMessage.errorCode === 'authentication_expired' ? '请重新登录后再发起问数。' : '查询已停止，请稍后重试或联系管理员。' }}</div>
+    </div>
+    <div
+      v-else-if="errorMessage.type === 'permission_denied'"
       class="error-container permission-denied"
     >
       <div class="permission-title">当前账号暂无相关表查询权限</div>
@@ -190,7 +199,7 @@ function showTraceBack() {
       v-else-if="errorMessage.type === 'datasource_not_found'"
       class="error-container datasource-not-found"
     >
-      <div class="datasource-not-found-title">未找到相关数据表</div>
+      <div class="datasource-not-found-title">{{ errorMessage.reason === 'ambiguous_datasource' ? '请明确数据源' : errorMessage.reason === 'no_query_permission' ? '暂无可查询权限' : errorMessage.reason === 'index_not_ready' ? '问数索引未就绪' : '未找到相关数据表' }}</div>
       <div class="datasource-not-found-message">
         {{ errorMessage.message || '没有与问题相关的表' }}
       </div>

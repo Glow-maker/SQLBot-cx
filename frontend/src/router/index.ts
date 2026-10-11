@@ -204,6 +204,12 @@ export const routes = [
         },
       },
       {
+        path: 'index-sync',
+        name: 'index-sync',
+        component: () => import('@/views/system/index-sync/IndexSync.vue'),
+        meta: { title: '问数索引', iconActive: 'ds', iconDeActive: 'noDs' },
+      },
+      {
         path: 'embedded',
         name: 'embedded',
         component: SystemEmbedded,

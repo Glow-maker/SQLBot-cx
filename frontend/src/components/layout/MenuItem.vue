@@ -1,6 +1,10 @@
 <script lang="ts">
 import { h, defineComponent } from 'vue'
 import { ElMenuItem, ElSubMenu, ElIcon } from 'element-plus-secondary'
+// Render-function components are not covered by the template style resolver.
+import 'element-plus-secondary/es/components/menu-item/style/css'
+import 'element-plus-secondary/es/components/sub-menu/style/css'
+import 'element-plus-secondary/es/components/icon/style/css'
 import { useRouter, useRoute } from 'vue-router'
 import chat from '@/assets/svg/menu/icon_chat_filled.svg'
 import noChat from '@/assets/svg/menu/icon_chat_outlined.svg'

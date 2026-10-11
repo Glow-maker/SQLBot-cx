@@ -153,11 +153,11 @@ def test_out_ds_factory():
     a1 = _build_virtual_assistant("Bearer aaa", 124)
     inst1 = AssistantOutDsFactory.get_instance(a1)
     inst1b = AssistantOutDsFactory.get_instance(a1)
-    case("factory/cache_hit_same_token",
+    case("factory/platform_catalog_refreshed",
          "同 (token, oid, configuration) 连续调用 2 次",
-         "返回同一 instance（is 同对象）",
+         "重新读取当前中台目录，不复用旧权限范围",
          f"is_same={inst1 is inst1b}",
-         inst1 is inst1b, g)
+         inst1 is not inst1b, g)
 
     case("factory/ds_list_loaded",
          "mock 返回固定 ds 列表",
@@ -448,22 +448,25 @@ def test_logical_route_recall():
              len(recalled) <= 50, g)
 
         settings.PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED = True
-        old_get_model = llm_mod.EmbeddingModelCache.get_model
+        old_get_model = llm_mod.get_platform_index
 
         def fake_get_model(*_args, **_kwargs):
             raise RuntimeError("mock embedding unavailable")
 
-        llm_mod.EmbeddingModelCache.get_model = fake_get_model
+        llm_mod.get_platform_index = fake_get_model
         try:
             recalled_after_error = service._recall_logical_table_entries("统计采购申请金额", entries)
         finally:
-            llm_mod.EmbeddingModelCache.get_model = old_get_model
+            llm_mod.get_platform_index = old_get_model
 
         case("logical_recall/embedding_error_fallback",
              "embedding get_model 抛异常",
-             "不阻断问数，仍返回关键词候选或全量回退",
+             "仅使用关键词候选继续，不全量回退",
              f"count={len(recalled_after_error)}",
              len(recalled_after_error) > 0 and any(item.get("name") == "purchase_apply" for item in recalled_after_error), g)
+        empty = service._recall_logical_table_entries("xyz_nonexistent_business", entries)
+        case("logical_recall/no_full_catalog_fallback", "无关键词且无有效向量索引",
+             "空候选，不发送全量目录", len(empty), not empty, g)
     finally:
         if old_enabled is not None:
             settings.PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED = old_enabled

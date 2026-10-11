@@ -1,0 +1,9 @@
+# Runtime dependency image must be pinned by the release command/manifest.
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE}
+COPY backend /opt/sqlbot/app
+COPY g2-ssr/app.js /opt/sqlbot/g2-ssr/app.js
+COPY deploy/dev-1/start.sh /opt/sqlbot/app/start-dev1.sh
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 CMD python -c "import os,urllib.request,urllib.error; u='http://'+os.environ['SQLBOT_BIND_HOST']+':'+os.environ['BACKEND_PORT']+'/api/v1/openapi.json'; exec('try:\n urllib.request.urlopen(u,timeout=5)\nexcept urllib.error.HTTPError as e:\n assert e.code == 401')"
+ENTRYPOINT ["sh", "/opt/sqlbot/app/start-dev1.sh"]
+

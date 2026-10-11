@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse
 
 from apps.chat.curd.chat import delete_chat_with_user, get_chart_data_with_user, get_chat_predict_data_with_user, \
     list_chats, get_chat_with_records, create_chat, rename_chat, \
-    delete_chat, get_chat_chart_data, get_chat_predict_data, get_chat_with_records_with_data, get_chat_record_by_id, \
+    delete_chat, get_chat_chart_data, get_chat_predict_data, get_chat_with_records_with_data, \
     format_json_data, format_json_list_data, get_chart_config, list_recent_questions, get_chat as get_chat_exec, \
     rename_chat_with_user, get_chat_log_history, get_chart_data_with_user_live
 from apps.chat.models.chat_model import CreateChat, ChatRecord, RenameChat, ChatQuestion, AxisObj, QuickCommand, \
@@ -231,7 +231,8 @@ async def ask_recommend_questions(session: SessionDep, current_user: CurrentUser
         yield 'data:' + orjson.dumps({'content': '[]', 'type': 'recommended_question'}).decode() + '\n\n'
 
     try:
-        record = get_chat_record_by_id(session, chat_record_id)
+        from apps.chat.task.record_access import require_record_access
+        record = require_record_access(session, current_user, chat_record_id)
 
         if not record:
             return StreamingResponse(_return_empty(), media_type="text/event-stream")
@@ -333,6 +334,8 @@ async def question_answer_inner(session: SessionDep, current_user: CurrentUser, 
                 rec_regenerate_record_id = rec_id
 
             # 针对已经是重新生成的提问，需要找到原来的提问是什么
+            from apps.chat.task.record_access import require_record_access
+            require_record_access(session, current_user, rec_regenerate_record_id)
             base_question_text = find_base_question(rec_regenerate_record_id, session)
             text_before_command = text_before_command + ("\n" if text_before_command else "") + base_question_text
 
@@ -423,6 +426,8 @@ async def analysis_or_predict_question(session: SessionDep, current_user: Curren
 async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, chat_record_id: int, action_type: str,
                               current_assistant: CurrentAssistant, in_chat: bool = True, stream: bool = True):
     try:
+        from apps.chat.task.record_access import require_record_access
+        require_record_access(session, current_user, chat_record_id)
         if action_type != 'analysis' and action_type != 'predict':
             raise Exception(f"Type {action_type} Not Found")
         record: ChatRecord | None = None
@@ -486,7 +491,10 @@ async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, ch
 @router.get("/record/{chat_record_id}/excel/export/{chat_id}", summary=f"{PLACEHOLDER_PREFIX}export_chart_data")
 @system_log(LogConfig(operation_type=OperationType.EXPORT, module=OperationModules.CHAT, resource_id_expr="chat_id", ))
 async def export_excel(session: SessionDep, current_user: CurrentUser, chat_record_id: int, chat_id: int, trans: Trans):
-    chat_record = session.get(ChatRecord, chat_record_id)
+    from apps.chat.task.record_access import require_record_access
+    chat_record = require_record_access(session, current_user, chat_record_id)
+    if chat_record.chat_id != chat_id:
+        raise HTTPException(403, '记录不属于此会话')
     if not chat_record:
         raise HTTPException(
             status_code=500,

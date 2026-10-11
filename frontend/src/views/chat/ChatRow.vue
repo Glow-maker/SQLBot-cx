@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ChatInfo, type ChatMessage } from '@/api/chat.ts'
-import logo_fold from '@/assets/LOGO-fold.svg'
-import { useAppearanceStoreWithOut } from '@/stores/appearance'
-import custom_small from '@/assets/svg/logo-custom_small.svg'
+import AssistantAvatar from '@/components/assistant/AssistantAvatar.vue'
+import type { AssistantState, AssistantVariant } from '@/components/assistant/model'
 
 withDefaults(
   defineProps<{
@@ -10,29 +9,22 @@ withDefaults(
     currentChat: ChatInfo
     hideAvatar?: boolean
     logoAssistant?: string
+    avatarVariant?: AssistantVariant
+    avatarState?: AssistantState
+    avatarAnimated?: boolean
   }>(),
   {
     hideAvatar: false,
   }
 )
-const appearanceStore = useAppearanceStoreWithOut()
 </script>
 
 <template>
   <div class="chat-row-container">
     <div class="chat-row" :class="{ 'right-to-left': msg.role === 'user' }">
       <div v-if="msg.role === 'assistant'" class="ai-avatar">
-        <img
-          v-if="!hideAvatar && appearanceStore.getLogin"
-          :src="logoAssistant ? logoAssistant : appearanceStore.getLogin"
-          alt=""
-          width="28"
-          height="28"
-        />
-        <el-icon v-else-if="!hideAvatar">
-          <logo_fold v-if="appearanceStore.themeColor === 'default'" />
-          <custom_small v-else></custom_small>
-        </el-icon>
+        <AssistantAvatar v-if="!hideAvatar" :variant="avatarVariant" :state="avatarState"
+          :animated="avatarAnimated ?? false" :size="28" />
       </div>
       <div :class="{ 'row-full': msg.role === 'assistant', 'width-auto': msg.role === 'user' }">
         <slot></slot>

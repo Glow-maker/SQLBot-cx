@@ -20,6 +20,7 @@ from typing import Iterable, Optional
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.optimizer.scope import traverse_scope
 
 from common.utils.utils import SQLBotLogUtil
 
@@ -84,22 +85,18 @@ def extract_table_refs(sql: str, dialect: Optional[str] = None) -> Optional[set[
             return None
 
     table_refs: set[SQLTableRef] = set()
-    cte_aliases: set[str] = set()
-
     for stmt in parsed_list:
         if stmt is None:
             continue
-        # 收集 CTE 别名，从最终 tables 集合中排除
-        for cte in stmt.find_all(exp.CTE):
-            alias = cte.alias_or_name
-            if alias:
-                cte_aliases.add(str(alias).lower())
-
-        for table in stmt.find_all(exp.Table):
+        try:
+            scopes = list(traverse_scope(stmt))
+            tables = [source for scope in scopes for _, source in scope.selected_sources.values()
+                      if isinstance(source, exp.Table)] if scopes else list(stmt.find_all(exp.Table))
+        except Exception:
+            return None
+        for table in tables:
             name = table.name
             if not name:
-                continue
-            if str(name).lower() in cte_aliases:
                 continue
             table_refs.add(SQLTableRef(
                 name=str(name),

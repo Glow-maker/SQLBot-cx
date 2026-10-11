@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { type ChatMessage } from '@/api/chat.ts'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import MdComponent from '@/views/chat/component/MdComponent.vue'
 import icon_up_outlined from '@/assets/svg/icon_up_outlined.svg'
 import icon_down_outlined from '@/assets/svg/icon_down_outlined.svg'
@@ -11,6 +11,8 @@ const props = withDefaults(
   defineProps<{
     message: ChatMessage
     loading?: boolean
+    progressLabel?: string
+    showWaiting?: boolean
     reasoningName:
       | 'sql_answer'
       | 'chart_answer'
@@ -20,6 +22,8 @@ const props = withDefaults(
   }>(),
   {
     loading: false,
+    progressLabel: '正在处理问题',
+    showWaiting: true,
   }
 )
 
@@ -28,6 +32,20 @@ const { t } = useI18n()
 const chatConfig = useChatConfigStore()
 
 const show = ref<boolean>(false)
+const elapsedSeconds = ref(0)
+let waitTimer: ReturnType<typeof setInterval> | undefined
+watch(() => props.message.isTyping && props.showWaiting, (active) => {
+  clearInterval(waitTimer)
+  waitTimer = undefined
+  elapsedSeconds.value = 0
+  if (active) {
+    const started = Date.now()
+    waitTimer = setInterval(() => {
+      elapsedSeconds.value = Math.floor((Date.now() - started) / 1000)
+    }, 1000)
+  }
+}, { immediate: true })
+onBeforeUnmount(() => clearInterval(waitTimer))
 
 const reasoningContent = computed<Array<string>>(() => {
   const names: Array<'sql_answer' | 'chart_answer' | 'analysis_thinking' | 'predict'> = []
@@ -78,6 +96,7 @@ onMounted(() => {
 
 <template>
   <div class="base-answer-block">
+    <slot name="progress"></slot>
     <el-button v-if="showReasoning && (message.isTyping || hasReasoning)" class="thinking-btn" @click="clickShow">
       <div class="thinking-btn-inner">
         <span v-if="message.isTyping">{{ t('qa.thinking') }}</span>
@@ -99,7 +118,11 @@ onMounted(() => {
     </div>
     <div class="answer-container">
       <slot></slot>
-      <el-button v-if="message.isTyping" style="min-width: unset" type="primary" link loading />
+      <div v-if="message.isTyping && showWaiting" class="answer-progress" role="status" aria-live="polite">
+        <span class="progress-spinner" aria-hidden="true"></span>
+        <span>{{ progressLabel }}</span>
+        <span class="progress-time" aria-hidden="true">已等待 {{ elapsedSeconds }} 秒</span>
+      </div>
       <slot name="tool"></slot>
       <slot name="footer"></slot>
     </div>
@@ -108,6 +131,26 @@ onMounted(() => {
 
 <style scoped lang="less">
 .base-answer-block {
+  .answer-progress {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+    min-height: 28px;
+    font-size: 13px;
+    color: var(--ed-color-primary, #409eff);
+  }
+  .progress-time { color: #646a73; font-variant-numeric: tabular-nums; }
+  .progress-spinner {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    border: 2px solid rgba(64, 158, 255, 0.2);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: answer-progress-spin 0.75s linear infinite;
+  }
   .thinking-btn {
     height: 32px;
     padding: 5px 12px;
@@ -179,4 +222,5 @@ onMounted(() => {
     color: rgba(31, 35, 41, 1);
   }
 }
+@keyframes answer-progress-spin { to { transform: rotate(360deg); } }
 </style>

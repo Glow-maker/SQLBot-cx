@@ -2,7 +2,7 @@ const http = require('http');
 const url = require("url");
 const util = require('util');
 const { createChart } = require('@antv/g2-ssr');
-const port = 3000;
+const port = Number(process.env.G2_PORT || 3000);
 const { getPieOptions } = require('./charts/pie.js');
 const { getLineOptions } = require('./charts/line.js');
 const { getColumnOptions } = require('./charts/column.js');
@@ -16,7 +16,7 @@ http.createServer((req, res) => {
     } else if (req.method === 'POST') {
         toPost(req, res);
     }
-}).listen(port, () => {
+}).listen(port, process.env.G2_HOST || '0.0.0.0', () => {
     console.info(`Server listening on: http://localhost:${port}`);
 });
 

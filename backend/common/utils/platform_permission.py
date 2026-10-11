@@ -87,6 +87,8 @@ def check_table_permissions(
         return PermissionCheckResult(allowed=True, raw_payload={"tables": []})
 
     if not is_permission_check_enabled():
+        if settings.PLATFORM_DATASOURCE_ENABLED:
+            return PermissionCheckResult(allowed=False, reason='permission_service_not_configured')
         # 配置未开启：视为不校验放行（保持改造前行为）
         return PermissionCheckResult(allowed=True, raw_payload={"skipped": "disabled"})
 
@@ -157,7 +159,10 @@ def check_table_permissions(
         )
 
     data = body_json.get("data") or {}
-    allowed = bool(data.get("allowed", False))
+    if (not isinstance(data, dict) or type(data.get('allowed')) is not bool
+            or str(data.get('datasourceId')) != str(datasource_id)):
+        return PermissionCheckResult(allowed=False, reason='permission_service_invalid_identity_or_result')
+    allowed = data['allowed'] is True and not data.get('deniedTables')
     denied_raw = data.get("deniedTables") or []
     denied = [
         DeniedTable(
@@ -187,9 +192,22 @@ def denied_tables_to_sse_payload(result: PermissionCheckResult, gate_label: str)
     把 PermissionCheckResult 转成 SSE 友好结构（与 datasource_not_found 同款 schema）。
     gate_label: "gate1" 或 "gate2"，便于前端区分两次校验的提示位置。
     """
+    raw = result.raw_payload or {}
+    failures = [{"reason": result.reason, "raw": raw}] + [
+        group for group in raw.get("groups", []) if not group.get("allowed")
+    ]
+    auth_expired = any(
+        (group.get("raw") or {}).get("code") in (401, "401")
+        or group.get("reason") == "permission_service_status_401"
+        for group in failures
+    )
+    service_error = any((group.get("reason") or "").startswith("permission_service_") for group in failures)
     return {
         "type": "permission_denied",
         "gate": gate_label,
+        "errorCode": ("authentication_expired" if auth_expired
+                      else "permission_service_error" if service_error
+                      else "table_permission_denied"),
         "reason": result.reason or "user_lacks_table_permission",
         "datasourceId": result.datasource_id,
         "deniedTables": [

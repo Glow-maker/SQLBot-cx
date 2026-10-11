@@ -1,0 +1,30 @@
+# 合并进现场原 env，不覆盖原文件。不在此填写或分发真实密码。
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+LOCAL_MODEL_PATH=/opt/sqlbot/models
+PLATFORM_LOGICAL_DATASOURCE_ENABLED=true
+PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED=true
+PLATFORM_LOGICAL_ROUTE_EMBEDDING_ENABLED=true
+PLATFORM_LOGICAL_ROUTE_RECALL_COUNT=50
+PLATFORM_LOGICAL_ROUTE_KEYWORD_COUNT=30
+# 下列配置沿用现场实际值，必须核对。不要直接复制占位符。
+# POSTGRES_SERVER=<现有PG地址>
+# POSTGRES_PORT=<现有PG端口>
+# POSTGRES_USER=<现有应用用户>
+# POSTGRES_PASSWORD=<从原env保留>
+# POSTGRES_DB=<现有SQLBot数据库>
+# SECRET_KEY=<从原env保留，不重新生成>
+# PLATFORM_AUTH_ENABLED=true
+# PLATFORM_AUTH_STRICT_MODE=true
+# PLATFORM_AUTH_BASE_URL=http://<现有中台网关>:<端口>
+# PLATFORM_AUTH_REDIS_URL=<保留中台认证Redis连接及逻辑DB>
+# PLATFORM_AUTH_REDIS_KEY_PREFIX=oauth2_access_token:%s
+# PLATFORM_DATASOURCE_ENABLED=true
+# PLATFORM_DATASOURCE_BASE_URL=http://<data-server地址>:<实际端口>
+# PLATFORM_DATASOURCE_LIST_PATH=/openapi/sqlbot/datasources/query
+# PLATFORM_PERMISSION_CHECK_PATH=/openapi/sqlbot/table-permissions/check
+# FRONTEND_HOST=<浏览器实际访问中台的origin>
+# BACKEND_CORS_ORIGINS=<沿用现场配置>
+# BACKEND_PORT=8011
+# MCP_PORT=8012
+# 本包启动脚本固定主服务单worker。不要另行设置多副本。

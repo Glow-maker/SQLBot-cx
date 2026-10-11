@@ -2,6 +2,7 @@ import concurrent
 import json
 import os
 import re
+import time
 import traceback
 import urllib.parse
 import warnings
@@ -24,7 +25,10 @@ from sqlbot_xpack.custom_prompt.models.custom_prompt_model import CustomPromptTy
 from sqlbot_xpack.license.license_manage import SQLBotLicenseUtil
 from sqlmodel import Session
 
-from apps.ai_model.embedding import EmbeddingModelCache
+from apps.chat.task.progress import ChatProgress
+from apps.chat.task.query_guard import bounded_stream, is_greeting, require_read_query
+from apps.datasource.embedding.platform_index import get_platform_index
+from apps.datasource.embedding.platform_recall import exact_name, fuse, routing_card
 from apps.ai_model.model_factory import LLMConfig, LLMFactory, get_default_config
 from common.utils.platform_permission import (
     DeniedTable, PermissionCheckResult, check_table_permissions, denied_tables_to_sse_payload, is_permission_check_enabled,
@@ -44,7 +48,6 @@ from apps.data_training.curd.data_training import get_training_template
 from apps.datasource.crud.datasource import get_table_schema
 from apps.datasource.crud.permission import get_row_permission_filters, is_normal_user
 from apps.datasource.embedding.ds_embedding import get_ds_embedding
-from apps.datasource.embedding.utils import cosine_similarity
 from apps.datasource.models.datasource import CoreDatasource
 from apps.db.db import exec_sql, get_version, check_connection
 from apps.system.crud.assistant import AssistantOutDs, AssistantOutDsFactory, get_assistant_ds
@@ -105,6 +108,10 @@ class LLMService:
     def __init__(self, session: Session, current_user: CurrentUser, chat_question: ChatQuestion,
                  current_assistant: Optional[CurrentAssistant] = None, no_reasoning: bool = False,
                  embedding: bool = False, config: LLMConfig = None):
+        self.current_logs = {}
+        self.sql_message = []
+        self.chart_message = []
+        self.out_ds_instance = None
         self.chunk_list = []
         self.current_user = current_user
         self.current_assistant = current_assistant
@@ -116,6 +123,9 @@ class LLMService:
         chat: Chat | None = session.get(Chat, chat_id)
         if not chat:
             raise SingleMessageError(f"Chat with id {chat_id} not found")
+        if chat.create_by != current_user.id or chat.oid != current_user.oid:
+            raise SingleMessageError("无权访问此会话")
+        self.query_deadline = time.monotonic() + 120
         ds: CoreDatasource | AssistantOutDsSchema | None = None
         if not chat.datasource and chat_question.datasource_id:
             _ds = session.get(CoreDatasource, chat_question.datasource_id)
@@ -215,6 +225,30 @@ class LLMService:
     def init_messages(self, session: Session):
 
         self.choose_table_schema(session)
+        if self._logical_datasource_enabled():
+            # Revalidate every historical SQL before reusing prompts that may
+            # contain schema/results. One revoked round invalidates the history.
+            for log in self.generate_sql_logs:
+                previous = session.get(ChatRecord, log.pid)
+                try:
+                    from apps.chat.task.record_access import require_record_access
+                    require_record_access(session, self.current_user, log.pid, current_assistant=self.current_assistant)
+                    previous_ds = self._ensure_out_ds_instance().get_ds(previous.datasource)
+                    same_source = (AssistantOutDs._physical_datasource_key(previous_ds)
+                                   == AssistantOutDs._physical_datasource_key(self.ds))
+                except Exception:
+                    same_source = False
+                if not previous or not previous.sql or not same_source:
+                    self.generate_sql_logs = []
+                    self.generate_chart_logs = []
+                    self.chat_question.error_msg = ''
+                    break
+                check = self._do_permission_check(previous.sql, None, "history")
+                if check is None or not check.allowed:
+                    self.generate_sql_logs = []
+                    self.generate_chart_logs = []
+                    self.chat_question.error_msg = ''
+                    break
 
         last_sql_messages: List[dict[str, Any]] = self.generate_sql_logs[-1].messages if len(
             self.generate_sql_logs) > 0 else []
@@ -230,6 +264,10 @@ class LLMService:
         # add sys prompt
         self.sql_message.append(SystemMessage(
             content=self.chat_question.sql_sys_question(self.ds.type, self.enable_sql_row_limit)))
+        if self._logical_datasource_enabled():
+            self.sql_message[0].content += ('\n当前问题已选定的数据源：' + self.ds.name
+                + '。问题中的这个名称仅用于限定来源，不是表名或业务筛选条件。'
+                  '请在上述正式 m-schema 中的表和字段范围内完成其余查询需求。')
         if last_sql_messages is not None and len(last_sql_messages) > 0:
             last_rounds = get_last_conversation_rounds(last_sql_messages, rounds=count_limit)
 
@@ -397,7 +435,7 @@ class LLMService:
         full_thinking_text = ''
         full_analysis_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(analysis_msg), token_usage)
+        res = process_stream(self._model_stream(analysis_msg), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_analysis_text += chunk.get('content')
@@ -445,7 +483,7 @@ class LLMService:
         full_thinking_text = ''
         full_predict_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(predict_msg), token_usage)
+        res = process_stream(self._model_stream(predict_msg), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_predict_text += chunk.get('content')
@@ -497,7 +535,7 @@ class LLMService:
         full_thinking_text = ''
         full_guess_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(guess_msg), token_usage)
+        res = process_stream(self._model_stream(guess_msg), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_guess_text += chunk.get('content')
@@ -578,7 +616,7 @@ class LLMService:
                                                                                          msg in datasource_msg])
 
             token_usage = {}
-            res = process_stream(self.llm.stream(datasource_msg), token_usage)
+            res = process_stream(self._model_stream(datasource_msg), token_usage)
             for chunk in res:
                 if chunk.get('content'):
                     full_text += chunk.get('content')
@@ -722,9 +760,10 @@ class LLMService:
                 table_name = str(getattr(table, "name", "") or "")
                 table_id = getattr(table, "tableId", None) or getattr(table, "id", None)
                 field_preview = []
-                for field in (table.fields or [])[:20]:
+                for field in (table.fields or []):
                     field_preview.append({
                         "name": field.name,
+                        "alias": getattr(field, "alias", None),
                         "type": field.type,
                         "comment": field.comment,
                     })
@@ -765,9 +804,11 @@ class LLMService:
             entry.get("datasourceType"),
             entry.get("schemaName"),
         ]
-        for field in (entry.get("fields") or [])[:20]:
+        metadata = entry.get("_indexed_metadata") or {}
+        parts.extend([metadata.get("categoryName"), metadata.get("categoryComment"), metadata.get("comment")])
+        for field in [*(entry.get("fields") or []), *metadata.get("fields", [])]:
             if isinstance(field, dict):
-                parts.extend([field.get("name"), field.get("type"), field.get("comment")])
+                parts.extend([field.get("name"), field.get("alias"), field.get("type"), field.get("comment")])
         return " ".join(str(part) for part in parts if part is not None and str(part).strip() != "")
 
     @staticmethod
@@ -816,7 +857,7 @@ class LLMService:
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [entry for _, _, entry in scored[:limit]]
 
-    # 动态拼接每张表的召回文本，现算 embedding，和用户问题 embedding 做 cosine similarity 排序。这里不依赖中台返回 embedding，也不使用 CoreTable.embedding。
+    # 只编码问题；物理表向量由数据源页面手动同步。
     def _embedding_recall_logical_table_entries(
         self, question: str, entries: list[dict[str, Any]], limit: int
     ) -> list[dict[str, Any]]:
@@ -828,46 +869,29 @@ class LLMService:
         ):
             return []
         try:
-            texts = [self._logical_table_recall_text(entry) for entry in entries]
-            model = EmbeddingModelCache.get_model()
-            table_embeddings = model.embed_documents(texts)
-            question_embedding = model.embed_query(question)
-            scored: list[tuple[float, int, dict[str, Any]]] = []
-            for idx, embedding in enumerate(table_embeddings):
-                if embedding is None:
-                    continue
-                scored.append((cosine_similarity(question_embedding, embedding), idx, entries[idx]))
-            scored.sort(key=lambda item: (-item[0], item[1]))
-            return [entry for _, _, entry in scored[:limit]]
+            recalled, self._platform_index_available = get_platform_index().recall(
+                int(self.current_user.oid), question, entries, limit)
+            return recalled
         except Exception as e:
-            SQLBotLogUtil.warning(f"Logical datasource embedding recall failed: {e}")
+            SQLBotLogUtil.warning(f"Logical datasource embedding recall failed: {type(e).__name__}")
             return []
 
-    # 合并关键词结果 + embedding 结果，去重，最多保留 PLATFORM_LOGICAL_ROUTE_RECALL_COUNT=50 张。召回失败或为空时回退全量目录，为了不影响后续 LLM 选择。
+    # 始终限制候选数；没有候选时请求澄清或同步索引，不能回退全量目录。
     def _recall_logical_table_entries(
         self, question: str, entries: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        if not entries or not getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_ENABLED", True):
-            return entries
-        limit = int(getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_COUNT", 50) or 50)
-        if limit <= 0:
-            return entries
-
+        self._platform_index_available = False
+        limit = max(1, min(50, int(getattr(settings, "PLATFORM_LOGICAL_ROUTE_RECALL_COUNT", 50) or 50)))
+        try:
+            entries = get_platform_index().enrich(int(self.current_user.oid), entries)
+        except Exception as exc:
+            SQLBotLogUtil.warning(f"Platform index metadata unavailable: {type(exc).__name__}")
         keyword_entries = self._keyword_recall_logical_table_entries(question, entries)
+        # Exact table identities must not be lost to the keyword branch's smaller limit.
+        keyword_entries = [e for e in entries if exact_name(question, e)] + keyword_entries
         embedding_entries = self._embedding_recall_logical_table_entries(question, entries, limit)
 
-        recalled: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for entry in [*keyword_entries, *embedding_entries]:
-            key = self._logical_table_entry_key(entry)
-            if key in seen:
-                continue
-            seen.add(key)
-            recalled.append(entry)
-            if len(recalled) >= limit:
-                break
-
-        return recalled or entries
+        return fuse(question, keyword_entries, embedding_entries, limit)
 
     @staticmethod
     def _table_schema_name(ds, table) -> str:
@@ -962,35 +986,74 @@ class LLMService:
             result.append(entry)
         return result
 
+    def _logical_question_with_history(self, session: Session, entries):
+        question = self.chat_question.question
+        if any(e.get('datasourceName') and e['datasourceName'] in question for e in entries):
+            return question
+        logs = getattr(self, 'generate_sql_logs', [])
+        if not logs:
+            return question
+        from apps.chat.task.record_access import require_record_access
+        try:
+            previous = require_record_access(session, self.current_user, logs[-1].pid,
+                                             current_assistant=self.current_assistant)
+        except Exception:
+            # Revoked/invalid history must never supply a source or model context.
+            return question
+        names = {e.get('datasourceName') for e in entries
+                 if str(e.get('datasourceId')) == str(previous.datasource) and e.get('datasourceName')}
+        if not previous.sql or len(names) != 1:
+            return question
+        return f'当前续问沿用数据源：{next(iter(names))}。上一问题：{previous.question}。当前问题：{question}'
+
     def route_logical_datasource(self, _session: Session):
+        route_started = time.perf_counter()
+        yield {"_route_progress": ("metadata", "running")}
         all_entries = self._logical_table_entries()
+        SQLBotLogUtil.info(f"Platform record_id={self.record.id} metadata_load_ms={getattr(self.out_ds_instance, 'metadata_load_ms', 0):.1f} flatten_ms={(time.perf_counter() - route_started) * 1000:.1f}")
+        yield {"_route_progress": ("metadata", "completed")}
         if not all_entries:
             raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
-                "empty_available_table",
-                "No table metadata available for current user",
+                "no_query_permission",
+                "当前没有可查询的数据表，请联系数据管理员授权",
             )).decode())
-        entries = self._recall_logical_table_entries(self.chat_question.question, all_entries)
+        route_question = self._logical_question_with_history(_session, all_entries)
+        recall_started = time.perf_counter()
+        yield {"_route_progress": ("recall", "running")}
+        entries = self._recall_logical_table_entries(route_question, all_entries)
+        SQLBotLogUtil.info(f"Platform record_id={self.record.id} recall_ms={(time.perf_counter() - recall_started) * 1000:.1f}")
+        yield {"_route_progress": ("recall", "completed")}
+        identities = lambda items: [(e.get('datasourceId'), e.get('tableId'), e.get('schemaName'), e.get('name')) for e in items]
+        SQLBotLogUtil.info(f"Platform record_id={self.record.id} authorized_tables={identities(all_entries)} candidates={identities(entries)}")
+        if not entries:
+            indexed = getattr(self, "_platform_index_available", False)
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "no_relevant_table" if indexed else "index_not_ready",
+                "请补充业务对象、指标或时间范围" if indexed else "暂无可用候选表，请联系管理员同步问数索引",
+            )).decode())
         SQLBotLogUtil.info(
             f"Logical datasource route candidates: {len(entries)}/{len(all_entries)}"
         )
 
         route_msg: List[Union[BaseMessage, dict[str, Any]]] = [
             SystemMessage(content=(
-                "你是 SQLBot 的表路由器。你的任务是从给定的全域数据表目录中，"
+                "你是 SQLBot 的表路由器。你的任务是从给定的候选数据表目录中，"
                 "选择与用户问题最相关且足以生成 SQL 的真实物理表。"
                 "只返回 JSON，不要输出解释。"
                 "若存在强相关表，返回："
                 "{\"success\":true,\"tables\":[{\"datasourceId\":数据源ID,\"schemaName\":\"schema\",\"name\":\"表名\",\"tableId\":表ID}]}。"
                 "若没有相关表，返回：{\"success\":false,\"message\":\"原因\"}。"
                 "可以选择多张表，但不要选择弱相关或仅名称相似的表。"
+                "若多个数据源存在同名同义表且用户未明确数据源，不要任选一个，返回success=false并要求明确数据源。"
                 "如果目录中提供 schemaName/tableId，必须原样返回。"
             )),
             HumanMessage(content=orjson.dumps({
-                "question": self.chat_question.question,
-                "tables": entries,
+                "question": route_question,
+                "tables": [routing_card(e, self._logical_route_terms(route_question)) for e in entries],
             }).decode()),
         ]
 
+        yield {"_route_progress": ("selection", "running")}
         self.current_logs[OperationEnum.CHOOSE_DATASOURCE] = start_log(
             session=_session,
             ai_modal_id=self.chat_question.ai_modal_id,
@@ -1003,7 +1066,11 @@ class LLMService:
         full_thinking_text = ''
         full_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(route_msg), token_usage)
+        selection_started = time.perf_counter()
+        route_remaining = 30 - (time.perf_counter() - route_started)
+        if route_remaining <= 0:
+            raise TimeoutError('选表超时，请稍后重试；未开始的查询已取消')
+        res = process_stream(self._model_stream(route_msg, route_remaining), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_text += chunk.get('content')
@@ -1011,6 +1078,7 @@ class LLMService:
                 full_thinking_text += chunk.get('reasoning_content')
             yield chunk
 
+        SQLBotLogUtil.info(f"Platform record_id={self.record.id} llm_selection_ms={(time.perf_counter() - selection_started) * 1000:.1f} token_usage={token_usage}")
         route_msg.append(AIMessage(full_text))
         self.current_logs[OperationEnum.CHOOSE_DATASOURCE] = end_log(
             session=_session,
@@ -1051,10 +1119,12 @@ class LLMService:
             schema_name = item.get("schemaName") or item.get("schema") or item.get("db_schema")
             table_id = item.get("tableId") or item.get("id")
             matches = self._match_logical_entries(entries, table_name, datasource_id, schema_name, table_id)
-            if not matches and table_name:
-                matches = self._match_logical_entries(entries, table_name, datasource_id, schema_name)
-            if not matches and table_name:
-                matches = self._match_logical_entries(entries, table_name)
+            matches = [e for e in matches if datasource_id is not None and table_id is not None
+                       and str(table_name or '').lower() in (str(e.get('name', '')).lower(), str(e.get('qualifiedName', '')).lower())]
+            if not matches:
+                raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                    "invalid_route_selection", "选表结果超出当前候选范围，请补充问题后重试",
+                )).decode())
             selected.extend(matches)
 
         selected_map = {
@@ -1072,6 +1142,17 @@ class LLMService:
             item.get("physicalDatasourceKey") or f"datasource:{item.get('datasourceId')}"
             for item in selected
         }
+        for item in selected:
+            if item.get('datasourceName') and item['datasourceName'] in route_question:
+                continue
+            duplicates = [entry for entry in all_entries
+                if entry.get('qualifiedName') == item.get('qualifiedName')
+                and entry.get('physicalDatasourceKey') != item.get('physicalDatasourceKey')]
+            if duplicates:
+                raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                    'ambiguous_datasource', '多个可查询数据源存在同名表，请在问题中明确数据源名称后重试。',
+                    [{'name': entry.get('datasourceName')} for entry in [item, *duplicates]],
+                )).decode())
         if len(physical_keys) > 1:
             raise SingleMessageError(orjson.dumps(self._cross_source_payload(selected)).decode())
 
@@ -1093,6 +1174,7 @@ class LLMService:
             }
             for item in selected
         ]
+        yield {"_route_progress": ("selection", "completed")}
 
         self.record = save_select_datasource_answer(
             session=_session,
@@ -1139,7 +1221,7 @@ class LLMService:
 
     def _normalize_table_input(self, item: Any) -> dict[str, Any]:
         if isinstance(item, SQLTableRef):
-            return {"name": item.name, "schemaName": item.schema}
+            return {"name": item.name, "schemaName": item.schema, "catalog": item.catalog}
         if isinstance(item, dict):
             return {
                 "name": item.get("name") or item.get("tableName"),
@@ -1170,6 +1252,9 @@ class LLMService:
 
         for item in inputs:
             ref = self._normalize_table_input(item)
+            if ref.get('catalog') and ref['catalog'] != getattr(self.ds, 'dataBase', None):
+                unresolved.append({**ref, 'reason': 'cross_database_reference'})
+                continue
             table_id = ref.get("tableId")
             table_name = ref.get("name")
             schema_name = ref.get("schemaName")
@@ -1186,7 +1271,7 @@ class LLMService:
                     and (ds_id is None or str(entry.get("datasourceId")) == ds_id)
                 ]
 
-            if not matches and table_name:
+            if table_id is None and not matches and table_name:
                 name = str(table_name).lower()
                 matches = [
                     entry for entry in current_entries
@@ -1237,6 +1322,10 @@ class LLMService:
             return
 
         resolved, unresolved = self._resolve_table_inputs(inputs)
+        if self.logical_route_tables:
+            allowed = {(str(e.get('datasourceId')), str(e.get('tableId'))) for e in self.logical_route_tables}
+            unresolved.extend(dict(e, reason='table_outside_selected_route') for e in resolved
+                              if (str(e.get('datasourceId')), str(e.get('tableId'))) not in allowed)
         if not unresolved:
             return
 
@@ -1263,7 +1352,7 @@ class LLMService:
             unresolved,
         )).decode())
 
-    def generate_sql(self, _session: Session):
+    def generate_sql(self, _session: Session, report_progress: bool = False):
         # append current question
         self.sql_message.append(HumanMessage(
             self.chat_question.sql_user_question(current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -1280,7 +1369,9 @@ class LLMService:
         full_thinking_text = ''
         full_sql_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(self.sql_message), token_usage)
+        if report_progress:
+            yield {"_progress": "waiting_model"}
+        res = process_stream(self._model_stream(self.sql_message), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_sql_text += chunk.get('content')
@@ -1320,7 +1411,7 @@ class LLMService:
         full_thinking_text = ''
         full_dynamic_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(dynamic_sql_msg), token_usage)
+        res = process_stream(self._model_stream(dynamic_sql_msg), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_dynamic_text += chunk.get('content')
@@ -1378,7 +1469,7 @@ class LLMService:
         full_thinking_text = ''
         full_filter_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(permission_sql_msg), token_usage)
+        res = process_stream(self._model_stream(permission_sql_msg), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_filter_text += chunk.get('content')
@@ -1433,7 +1524,7 @@ class LLMService:
         full_thinking_text = ''
         full_chart_text = ''
         token_usage = {}
-        res = process_stream(self.llm.stream(self.chart_message), token_usage)
+        res = process_stream(self._model_stream(self.chart_message), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_chart_text += chunk.get('content')
@@ -1641,15 +1732,33 @@ class LLMService:
         Returns:
             Query results
         """
-        SQLBotLogUtil.info(f"Executing SQL on ds_id {self.ds.id}: {sql}")
+        self._check_deadline()
+        require_read_query(sql)
+        started = time.perf_counter()
+        SQLBotLogUtil.info(f"Platform record_id={self.record.id} execution_begin ds_id={self.ds.id}")
         try:
-            return exec_sql(ds=self.ds, sql=sql, origin_column=False)
+            return exec_sql(ds=self.ds, sql=sql, origin_column=False,
+                            deadline=getattr(self, 'query_deadline', None))
         except Exception as e:
             if isinstance(e, ParseSQLResultError):
                 raise e
             else:
                 err = traceback.format_exc(limit=1, chain=True)
                 raise SQLBotDBError(err)
+        finally:
+            SQLBotLogUtil.info(f"Platform record_id={self.record.id} execution_end elapsed_ms={(time.perf_counter()-started)*1000:.1f}")
+
+    def _check_deadline(self):
+        if time.monotonic() >= getattr(self, 'query_deadline', float('inf')):
+            raise TimeoutError("问数超过120秒，后续查询已取消")
+
+    def _model_stream(self, messages, limit=120):
+        self._check_deadline()
+        deadline = min(getattr(self, 'query_deadline', time.monotonic()+120), time.monotonic()+limit)
+        # A model-only producer may outlive the consumer briefly; no database
+        # continuation runs there, and read timeout bounds its lifetime.
+        model = self.llm.model_copy(update={'request_timeout': min(30, limit), 'max_retries': 0})
+        yield from bounded_stream(lambda: model.stream(messages), deadline)
 
     def pop_chunk(self):
         try:
@@ -1686,8 +1795,10 @@ class LLMService:
     def run_task(self, in_chat: bool = True, stream: bool = True,
                  finish_step: ChatFinishStep = ChatFinishStep.GENERATE_CHART):
         json_result: Dict[str, Any] = {'success': True}
+        progress = ChatProgress(in_chat)
         _session = None
         try:
+            yield from progress.update('route', detail='preparing')
             _session = session_maker()
             if self.ds:
                 oid = self.ds.oid if isinstance(self.ds, CoreDatasource) else 1
@@ -1716,12 +1827,28 @@ class LLMService:
             if not stream:
                 json_result['record_id'] = self.get_record().id
 
+            if is_greeting(self.chat_question.question):
+                message = "你好！请输入需要查询的业务对象、指标和时间范围，例如：统计订单总金额。"
+                save_select_datasource_answer(_session, self.record.id, message)
+                for stage in ('route', 'connect', 'generate', 'permission', 'query', 'result'):
+                    yield from progress.update(stage, 'skipped', 'greeting')
+                if in_chat:
+                    yield 'data:' + orjson.dumps({'type': 'guidance', 'content': message}).decode() + '\n\n'
+                    yield 'data:' + orjson.dumps({'type': 'finish'}).decode() + '\n\n'
+                else:
+                    yield {'success': True, 'message': message, 'record_id': self.record.id}
+                return
+
                 # select datasource if datasource is none
             if not self.ds:
                 logical_ds_mode = self._logical_datasource_enabled()
                 ds_res = self.route_logical_datasource(_session) if logical_ds_mode else self.select_datasource(_session)
 
                 for chunk in ds_res:
+                    if chunk.get('_route_progress'):
+                        detail_stage, detail_status = chunk['_route_progress']
+                        yield from progress.update_detail('route', detail_stage, detail_status)
+                        continue
                     SQLBotLogUtil.info(chunk)
                     if in_chat:
                         yield 'data:' + orjson.dumps(
@@ -1732,25 +1859,39 @@ class LLMService:
                                                   'engine_type': self.ds.type_name or self.ds.type,
                                                   'type': 'datasource'}).decode() + '\n\n'
 
+                yield from progress.update('route', 'completed')
             else:
                 self.validate_history_ds(_session)
+                yield from progress.update('route', 'skipped', 'reuse_datasource')
 
             # check connection
+            yield from progress.update('connect')
             connected = check_connection(ds=self.ds, trans=None)
             if not connected:
                 raise SQLBotDBConnectionError('Connect DB failed')
+            yield from progress.update('connect', 'completed')
 
             # generate sql
-            sql_res = self.generate_sql(_session)
+            yield from progress.update('generate', detail='preparing_context')
+            sql_res = self.generate_sql(_session, report_progress=in_chat)
+            model_output_started = False
             full_sql_text = ''
             for chunk in sql_res:
-                full_sql_text += chunk.get('content')
+                if chunk.get('_progress'):
+                    yield from progress.update('generate', detail=chunk['_progress'])
+                    continue
+                if not model_output_started and (chunk.get('content') or chunk.get('reasoning_content')):
+                    model_output_started = True
+                    yield from progress.update('generate', detail='receiving_model')
+                full_sql_text += chunk.get('content') or ''
                 if in_chat:
                     yield 'data:' + orjson.dumps(
                         {'content': chunk.get('content'), 'reasoning_content': chunk.get('reasoning_content'),
                          'type': 'sql-result'}).decode() + '\n\n'
             if in_chat:
                 yield 'data:' + orjson.dumps({'type': 'info', 'msg': 'sql generated'}).decode() + '\n\n'
+            yield from progress.update('generate', 'completed')
+            yield from progress.update('permission')
             # filter sql
             SQLBotLogUtil.info(full_sql_text)
 
@@ -1839,6 +1980,9 @@ class LLMService:
             self._validate_logical_sql_route(real_execute_sql, None)
 
             if finish_step.value <= ChatFinishStep.GENERATE_SQL.value:
+                yield from progress.update('permission', 'skipped', 'execution_not_requested')
+                yield from progress.update('query', 'skipped', 'not_requested')
+                yield from progress.update('result', 'skipped', 'not_requested')
                 if in_chat:
                     yield 'data:' + orjson.dumps({'type': 'finish'}).decode() + '\n\n'
                 if not stream:
@@ -1858,6 +2002,8 @@ class LLMService:
                     denied_tables_to_sse_payload(gate2_result, gate_label="gate2")
                 ).decode())
 
+            yield from progress.update('permission', 'completed')
+            yield from progress.update('query')
             result = self.execute_sql(sql=real_execute_sql)
             self.current_logs[OperationEnum.EXECUTE_SQL] = end_log(session=_session,
                                                                    log=self.current_logs[OperationEnum.EXECUTE_SQL],
@@ -1868,12 +2014,14 @@ class LLMService:
             result["data"] = _data
 
             self.save_sql_data(session=_session, data_obj=result)
+            yield from progress.update('query', 'completed')
             if in_chat:
                 yield 'data:' + orjson.dumps({'content': 'execute-success', 'type': 'sql-data'}).decode() + '\n\n'
             if not stream:
                 json_result['data'] = get_chat_chart_data(_session, self.record.id)
 
             if finish_step.value <= ChatFinishStep.QUERY_DATA.value:
+                yield from progress.update('result', 'skipped', 'not_requested')
                 if stream:
                     if in_chat:
                         yield 'data:' + orjson.dumps({'type': 'finish'}).decode() + '\n\n'
@@ -1899,6 +2047,7 @@ class LLMService:
                 return
 
             # generate chart
+            yield from progress.update('result')
             used_tables_schema = self.out_ds_instance.get_db_schema(
                 self.ds.id, self.chat_question.question, embedding=False,
                 table_list=tables) if self.out_ds_instance else get_table_schema(
@@ -1927,6 +2076,7 @@ class LLMService:
             if not stream:
                 json_result['chart'] = chart
 
+            yield from progress.update('result', 'completed')
             if in_chat:
                 yield 'data:' + orjson.dumps(
                     {'content': orjson.dumps(chart).decode(), 'type': 'chart'}).decode() + '\n\n'
@@ -1979,10 +2129,13 @@ class LLMService:
                 yield json_result
 
         except Exception as e:
+            yield from progress.fail()
             traceback.print_exc()
             error_msg: str
             if isinstance(e, SingleMessageError):
                 error_msg = str(e)
+            elif isinstance(e, TimeoutError):
+                error_msg = orjson.dumps({'type': 'query_timeout', 'message': str(e)}).decode()
             elif isinstance(e, SQLBotDBConnectionError):
                 error_msg = orjson.dumps(
                     {'message': str(e), 'type': 'db-connection-err'}).decode()
@@ -2229,7 +2382,10 @@ class LLMService:
           - 启用时一定返回 PermissionCheckResult（allowed=True/False）
           - SQL parse 失败时返回 allowed=False，reason='sql_parse_failed'
         """
+        self._check_deadline()
         if not is_permission_check_enabled():
+            if settings.PLATFORM_DATASOURCE_ENABLED:
+                return PermissionCheckResult(allowed=False, reason='permission_service_not_configured')
             return None
 
         dialect = None
@@ -2295,6 +2451,7 @@ class LLMService:
                 "reason": result.reason,
                 "raw": result.raw_payload,
             })
+            SQLBotLogUtil.info(f"Platform record_id={getattr(self.record, 'id', None)} gate={gate_label} datasource_id={ds_id} allowed={result.allowed} tables={table_refs}")
             if not result.allowed:
                 denied_tables.extend(result.denied_tables)
                 if first_denied_reason is None:

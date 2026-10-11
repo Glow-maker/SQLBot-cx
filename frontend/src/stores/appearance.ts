@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { store } from '@/stores/index'
 // import { defaultFont, list } from '@/api/font'
 import { request } from '@/utils/request'
+import rocketIcon from '@/assets/rocket-favicon.svg?url'
 
 import { setTitle, setCurrentColor } from '@/utils/utils'
 
@@ -315,7 +316,7 @@ const setLinkIcon = (linkWeb?: string) => {
     if (linkWeb) {
       link['href'] = baseUrl + linkWeb
     } else {
-      link['href'] = '/LOGO-fold.svg'
+      link['href'] = rocketIcon
     }
   }
 }
