@@ -102,6 +102,9 @@ class UserInfoDTO(UserEditor):
     language: str = "zh-CN"
     weight: int = 0
     isAdmin: bool = False
+    # Set only after the corresponding authenticator has verified the credential.
+    auth_source: str = 'unknown'
+    platform_admin_verified: bool = False
 
 
 class AssistantBase(BaseModel):

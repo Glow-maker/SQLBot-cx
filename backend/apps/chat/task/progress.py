@@ -15,8 +15,9 @@ STAGES = {
 
 
 class ChatProgress:
-    def __init__(self, enabled=True, clock=monotonic):
+    def __init__(self, enabled=True, clock=monotonic, observer=None):
         self.enabled = enabled
+        self.observer = observer
         self.clock = clock
         self.started = {}
         self.statuses = {}
@@ -26,7 +27,7 @@ class ChatProgress:
         self.active_detail = None
 
     def update(self, stage, status="running", detail=""):
-        if not self.enabled:
+        if not self.enabled and self.observer is None:
             return []
         now = self.clock()
         if self.statuses.get(stage) in ("completed", "failed", "skipped"):
@@ -40,10 +41,12 @@ class ChatProgress:
         payload = dict(type="progress", stage=stage, status=status,
                        elapsedMs=round((now - self.started[stage]) * 1000),
                        detail=detail, message=("正在" if status == "running" else "") + STAGES[stage])
-        return ["data:" + orjson.dumps(payload).decode() + "\n\n"]
+        if self.observer:
+            self.observer(payload)
+        return ["data:" + orjson.dumps(payload).decode() + "\n\n"] if self.enabled else []
 
     def update_detail(self, stage, detail_stage, status="running"):
-        if not self.enabled or self.statuses.get(stage) in ("completed", "failed", "skipped"):
+        if (not self.enabled and self.observer is None) or self.statuses.get(stage) in ("completed", "failed", "skipped"):
             return []
         key = (stage, detail_stage)
         if self.detail_statuses.get(key) in ("completed", "failed", "skipped"):
@@ -63,7 +66,9 @@ class ChatProgress:
                        detail="", message="正在" + STAGES[stage],
                        detailStage=detail_stage, detailStatus=status,
                        detailElapsedMs=round((now - self.detail_started[key]) * 1000))
-        return ["data:" + orjson.dumps(payload).decode() + "\n\n"]
+        if self.observer:
+            self.observer(payload)
+        return ["data:" + orjson.dumps(payload).decode() + "\n\n"] if self.enabled else []
 
     def fail(self):
         events = []

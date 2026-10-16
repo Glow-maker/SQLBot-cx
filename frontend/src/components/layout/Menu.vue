@@ -5,8 +5,11 @@ import 'element-plus-secondary/es/components/menu/style/css'
 import { useRoute, useRouter } from 'vue-router'
 import MenuItem from './MenuItem.vue'
 import { useUserStore } from '@/stores/user'
+import { useOperationsStore } from '@/stores/operations'
+import { canOpenSystemRoute } from '@/views/system/operations/operationsPolicy'
 // import { routes } from '@/router'
 const userStore = useUserStore()
+const operationsStore = useOperationsStore()
 const router = useRouter()
 defineProps({
   collapse: Boolean,
@@ -43,7 +46,14 @@ const routerList = computed(() => {
     const [sysRouter] = formatRoute(
       router.getRoutes().filter((route: any) => route?.name === 'system')
     )
-    return sysRouter.children
+    const allowedMenus = (menus: any[]): any[] => menus.flatMap((menu) => {
+      if (menu.children?.length) {
+        const children = allowedMenus(menu.children)
+        return children.length ? [{ ...menu, children }] : []
+      }
+      return canOpenSystemRoute(menu.meta || {}, userStore.isAdmin, operationsStore.access) ? [menu] : []
+    })
+    return allowedMenus(sysRouter.children)
   }
   const list = router.getRoutes().filter((route) => {
     return (

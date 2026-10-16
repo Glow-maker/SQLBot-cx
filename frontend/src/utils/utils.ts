@@ -125,7 +125,7 @@ export const getCurrentRouter = () => {
 }
 
 export const setTitle = (title?: string) => {
-  document.title = title || 'SQLBot'
+  document.title = title || '智能问数'
 }
 
 function rgbToHex(r: any, g: any, b: any) {

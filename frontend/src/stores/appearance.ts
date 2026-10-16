@@ -257,7 +257,7 @@ export const useAppearanceStore = defineStore('appearanceStore', {
       const obj = LicenseGenerator.getLicense()
       if (obj?.status !== 'valid') {
         setCurrentColor('#409eff')
-        document.title = 'SQLBot'
+        document.title = '智能问数'
         setLinkIcon()
         return
       }
@@ -302,8 +302,8 @@ export const useAppearanceStore = defineStore('appearanceStore', {
         document.title = this.name
         setTitle(this.name)
       } else {
-        document.title = 'SQLBot'
-        setTitle('SQLBot')
+        document.title = '智能问数'
+        setTitle('智能问数')
       }
       setLinkIcon(this.web)
     },

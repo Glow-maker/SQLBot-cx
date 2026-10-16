@@ -70,6 +70,9 @@ def extract_table_refs(sql: str, dialect: Optional[str] = None) -> Optional[set[
     """
     if not sql or not sql.strip():
         return set()
+    # 平台数据源使用 pg，SQLGlot 对应的方言名称是 postgres。
+    if dialect == 'pg':
+        dialect = 'postgres'
     try:
         parsed_list = sqlglot.parse(sql, dialect=dialect)
     except sqlglot.errors.ParseError as exc:

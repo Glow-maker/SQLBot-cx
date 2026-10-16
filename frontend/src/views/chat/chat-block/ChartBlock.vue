@@ -120,6 +120,8 @@ const chartObject = computed<{
     series: { name: string; value: string }
   }
   columns: Array<{ name: string; value: string }>
+  render_status?: 'pending' | 'ready' | 'skipped' | 'failed'
+  render_message?: string
 }>(() => {
   if (props.message?.record?.chart) {
     return JSON.parse(props.message.record.chart)
@@ -130,6 +132,17 @@ const chartObject = computed<{
 const currentChartType = ref<ChartTypes | undefined>(
   props.chatType ?? chartObject.value.type ?? 'table'
 )
+
+const resultNotice = computed(() => {
+  if (props.isPredict) return ''
+  if (props.message.record?.chart_warning) return props.message.record.chart_warning
+  if (chartObject.value.render_status === 'failed') return chartObject.value.render_message || '图表生成失败，已保留数据明细'
+  if (chartObject.value.render_status === 'pending') {
+    if (!props.message.isTyping) return '图表更新未完成，已保留数据明细'
+    return returnedRows.value === undefined ? '正在加载查询结果，图表生成中' : '查询结果已返回，图表生成中'
+  }
+  return ''
+})
 
 const chartType = computed<ChartTypes>({
   get() {
@@ -186,7 +199,6 @@ function changeTable() {
 
 function onTypeChange(val: any) {
   chartType.value = val
-  chartRef.value?.onTypeChange()
 }
 
 function reloadChart() {
@@ -352,9 +364,8 @@ watch(
 <template>
   <div
     v-if="
-      !message.isTyping &&
-      ((!isPredict && (message?.record?.sql || message?.record?.chart)) ||
-        (isPredict && message?.record?.chart && data.length > 0))
+      (!isPredict && (message?.record?.sql || message?.record?.chart)) ||
+      (!message.isTyping && isPredict && message?.record?.chart && data.length > 0)
     "
     v-loading.fullscreen.lock="loading"
     class="chart-component-container"
@@ -494,6 +505,7 @@ watch(
       </div>
     </div>
 
+    <p v-if="resultNotice" class="result-notice" role="status">{{ resultNotice }}</p>
     <template v-if="message?.record?.chart">
       <div class="result-view-label">{{ chartType === 'table' ? '数据明细' : '图表展示' }}<span>基于本次查询返回的数据</span></div>
       <div class="chart-block">
@@ -641,6 +653,12 @@ watch(
 }
 </style>
 <style scoped lang="less">
+.result-notice {
+  margin: 4px 0 12px;
+  color: var(--ed-text-color-secondary, #646a73);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .chart-component-container {
   width: 100%;
   padding: 16px;

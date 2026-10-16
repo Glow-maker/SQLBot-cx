@@ -1,9 +1,14 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, reactive, ref, unref } from 'vue'
-import icon_export_outlined from '@/assets/svg/icon_export_outlined.svg'
-import { trainingApi } from '@/api/training'
-import { formatTimestamp } from '@/utils/date'
+import { knowledgeApi, knowledgeSources, knowledgeScopeReady } from '@/api/knowledge'
+import { useOperationsStore } from '@/stores/operations'
+import KnowledgeContext from '@/views/system/operations/KnowledgeContext.vue'
+import { useRoute } from 'vue-router'
 import { datasourceApi } from '@/api/datasource'
+import icon_export_outlined from '@/assets/svg/icon_export_outlined.svg'
+import Uploader from '@/views/system/excel-upload/Uploader.vue'
+import { computed, watch, nextTick, onMounted, reactive, ref, unref } from 'vue'
+import { trainingApi as localTrainingApi } from '@/api/training'
+import { formatTimestamp } from '@/utils/date'
 import icon_add_outlined from '@/assets/svg/icon_add_outlined.svg'
 import IconOpeEdit from '@/assets/svg/icon_edit_outlined.svg'
 import icon_copy_outlined from '@/assets/embedded/icon_copy_outlined.svg'
@@ -15,10 +20,18 @@ import { useUserStore } from '@/stores/user'
 import { useI18n } from 'vue-i18n'
 import { cloneDeep } from 'lodash-es'
 import { getAdvancedApplicationList } from '@/api/embedded.ts'
-import Uploader from '@/views/system/excel-upload/Uploader.vue'
+
+const ops = useOperationsStore()
+const route = useRoute()
+const operationsMode = computed(() => route.meta.operations === true)
+const scopedApi = knowledgeApi('data-training')
+const api = computed(() => (operationsMode.value ? scopedApi : localTrainingApi))
 
 interface Form {
   id?: string | null
+  report_id?: string | number
+  draft_id?: string
+  enabled?: boolean
   question: string | null
   datasource: string | null
   datasource_name: string | null
@@ -39,11 +52,12 @@ const selectable = () => {
   return true
 }
 onMounted(() => {
+  applyDraft()
   search()
 })
 
 const isDefaultOrg = computed(() => {
-  return userStore.oid === '1'
+  return (!operationsMode.value || ops.scope === 'local') && userStore.oid === '1'
 })
 
 const dialogFormVisible = ref<boolean>(false)
@@ -60,6 +74,7 @@ const pageInfo = reactive({
 const dialogTitle = ref('')
 const updateLoading = ref(false)
 const defaultForm = {
+  enabled: operationsMode.value ? false : undefined,
   id: null,
   question: null,
   description: null,
@@ -68,7 +83,9 @@ const defaultForm = {
   advanced_application: null,
   advanced_application_name: null,
 }
-const pageForm = ref<Form>(cloneDeep(defaultForm))
+const pageForm = ref<Form>(
+  cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined })
+)
 const copyCode = () => {
   copy(pageForm.value.description!)
     .then(function () {
@@ -78,13 +95,6 @@ const copyCode = () => {
       ElMessage.error(t('embedded.copy_failed'))
     })
 }
-const cancelDelete = () => {
-  handleToggleRowSelection(false)
-  multipleSelectionAll.value = []
-  checkAll.value = false
-  isIndeterminate.value = false
-}
-
 const exportExcel = () => {
   ElMessageBox.confirm(t('training.export_hint', { msg: pageInfo.total }), {
     confirmButtonType: 'primary',
@@ -94,7 +104,7 @@ const exportExcel = () => {
     autofocus: false,
   }).then(() => {
     searchLoading.value = true
-    trainingApi
+    localTrainingApi
       .export2Excel(keywords.value ? { question: keywords.value } : {})
       .then((res) => {
         const blob = new Blob([res], {
@@ -138,6 +148,13 @@ const exportExcel = () => {
   })
 }
 
+const cancelDelete = () => {
+  handleToggleRowSelection(false)
+  multipleSelectionAll.value = []
+  checkAll.value = false
+  isIndeterminate.value = false
+}
+
 const deleteBatchUser = () => {
   ElMessageBox.confirm(
     t('training.training_data_items', { msg: multipleSelectionAll.value.length }),
@@ -149,7 +166,7 @@ const deleteBatchUser = () => {
       autofocus: false,
     }
   ).then(() => {
-    trainingApi.deleteEmbedded(multipleSelectionAll.value.map((ele) => ele.id)).then(() => {
+    api.value.deleteEmbedded(multipleSelectionAll.value.map((ele) => ele.id)).then(() => {
       ElMessage({
         type: 'success',
         message: t('dashboard.delete_success'),
@@ -167,7 +184,7 @@ const deleteHandler = (row: any) => {
     customClass: 'confirm-no_icon',
     autofocus: false,
   }).then(() => {
-    trainingApi.deleteEmbedded([row.id]).then(() => {
+    api.value.deleteEmbedded([row.id]).then(() => {
       multipleSelectionAll.value = multipleSelectionAll.value.filter((ele) => row.id !== ele.id)
       ElMessage({
         type: 'success',
@@ -216,19 +233,28 @@ const handleToggleRowSelection = (check: boolean = true) => {
   isIndeterminate.value = !(i === 0 || i === arr.length)
 }
 
+let searchVersion = 0
 const search = ($event: any = {}) => {
+  const version = ++searchVersion
+  if (operationsMode.value && !knowledgeScopeReady()) {
+    fieldList.value = []
+    pageInfo.total = 0
+    searchLoading.value = false
+    return
+  }
   if ($event?.isComposing) {
     return
   }
   searchLoading.value = true
   oldKeywords.value = keywords.value
-  trainingApi
+  api.value
     .getList(
       pageInfo.currentPage,
       pageInfo.pageSize,
       keywords.value ? { question: keywords.value } : {}
     )
     .then((res) => {
+      if (version !== searchVersion) return
       toggleRowLoading.value = true
       fieldList.value = res.data
       pageInfo.total = res.total_count
@@ -238,7 +264,7 @@ const search = ($event: any = {}) => {
       })
     })
     .finally(() => {
-      searchLoading.value = false
+      if (version === searchVersion) searchLoading.value = false
     })
 }
 
@@ -273,11 +299,15 @@ const rules = computed(() => {
 })
 
 const list = () => {
-  datasourceApi.list().then((res: any) => {
+  const context = JSON.stringify([route.path, ops.context])
+  const sourceRequest = operationsMode.value ? knowledgeSources() : datasourceApi.list()
+  sourceRequest.then((res: any) => {
+    if (context !== JSON.stringify([route.path, ops.context])) return
     options.value = res || []
   })
   if (isDefaultOrg.value) {
     getAdvancedApplicationList().then((res: any) => {
+      if (context !== JSON.stringify([route.path, ops.context])) return
       adv_options.value = res || []
     })
   }
@@ -291,7 +321,7 @@ const saveHandler = () => {
         delete obj.id
       }
       updateLoading.value = true
-      trainingApi
+      api.value
         .updateEmbedded(obj)
         .then(() => {
           ElMessage({
@@ -320,7 +350,7 @@ const editHandler = (row: any) => {
 }
 
 const onFormClose = () => {
-  pageForm.value = cloneDeep(defaultForm)
+  pageForm.value = cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined })
   dialogFormVisible.value = false
 }
 
@@ -342,7 +372,7 @@ const handleRowClick = (row: any) => {
 }
 
 const changeStatus = (id: any, val: any) => {
-  trainingApi
+  api.value
     .enable(id, val + '')
     .then(() => {
       ElMessage({
@@ -356,13 +386,41 @@ const changeStatus = (id: any, val: any) => {
 }
 
 const onRowFormClose = () => {
-  pageForm.value = cloneDeep(defaultForm)
+  pageForm.value = cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined })
   rowInfoDialog.value = false
 }
+
+const changeContext = () => {
+  onFormClose()
+  rowInfoDialog.value = false
+  fieldList.value = []
+  options.value = []
+  adv_options.value = []
+  checkAll.value = false
+  isIndeterminate.value = false
+  multipleSelectionAll.value = []
+  pageInfo.currentPage = 1
+  search()
+}
+const applyDraft = () => {
+  const draft = ops.draft
+  if (!operationsMode.value || !draft || draft.kind !== 'data-training') return
+  ops.scope = draft.scope
+  ops.tenantId = draft.tenantId
+  editHandler({
+    ...cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined }),
+    ...draft.values,
+    enabled: false,
+  })
+  ops.draft = null
+}
+
+watch(operationsMode, changeContext)
 </script>
 
 <template>
   <div v-loading="searchLoading" class="training">
+    <KnowledgeContext v-if="operationsMode" @change="changeContext" />
     <div class="tool-left">
       <span class="page-title">{{ $t('training.data_training') }}</span>
       <div class="tool-row">
@@ -379,19 +437,26 @@ const onRowFormClose = () => {
             </el-icon>
           </template>
         </el-input>
-        <el-button secondary @click="exportExcel">
-          <template #icon>
-            <icon_export_outlined />
-          </template>
-          {{ $t('professional.export_all') }}
-        </el-button>
-        <Uploader
-          upload-path="/system/data-training/uploadExcel"
-          template-path="/system/data-training/template"
-          :template-name="`${t('training.data_training')}.xlsx`"
-          @upload-finished="search"
-        />
-        <el-button class="no-margin" type="primary" @click="editHandler(null)">
+        <template v-if="!operationsMode">
+          <el-button secondary @click="exportExcel">
+            <template #icon>
+              <icon_export_outlined />
+            </template>
+            {{ $t('professional.export_all') }}
+          </el-button>
+          <Uploader
+            upload-path="/system/data-training/uploadExcel"
+            template-path="/system/data-training/template"
+            :template-name="`${t('training.data_training')}.xlsx`"
+            @upload-finished="search"
+          />
+        </template>
+        <el-button
+          class="no-margin"
+          type="primary"
+          :disabled="operationsMode && !knowledgeScopeReady()"
+          @click="editHandler(null)"
+        >
           <template #icon>
             <icon_add_outlined></icon_add_outlined>
           </template>
@@ -547,6 +612,12 @@ const onRowFormClose = () => {
     :before-close="onFormClose"
     modal-class="training-add_drawer"
   >
+    <el-alert
+      v-if="operationsMode && !pageForm.id"
+      title="新建内容保存为停用草稿，核对后在列表中启用。"
+      type="info"
+      :closable="false"
+    />
     <el-form
       ref="termFormRef"
       :model="pageForm"
@@ -669,6 +740,9 @@ const onRowFormClose = () => {
 .training {
   height: 100%;
   position: relative;
+  overflow: auto;
+  padding: 20px 24px 72px;
+  box-sizing: border-box;
 
   .datasource-yet {
     padding-bottom: 0;
@@ -681,6 +755,8 @@ const onRowFormClose = () => {
   }
 
   .tool-left {
+    flex-wrap: wrap;
+    gap: 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;

@@ -1,0 +1,68 @@
+{
+  "_source": "Generated from Capture.observe/model and ChatProgress.update/update_detail; no business data.",
+  "duration_ms": 27020,
+  "stages_json": [
+    {
+      "stage": "route",
+      "status": "completed",
+      "elapsedMs": 1250
+    },
+    {
+      "stage": "route",
+      "status": "running",
+      "elapsedMs": 290,
+      "detailStage": "metadata",
+      "detailStatus": "completed",
+      "detailElapsedMs": 240
+    },
+    {
+      "stage": "connect",
+      "status": "completed",
+      "elapsedMs": 0
+    },
+    {
+      "stage": "generate",
+      "status": "completed",
+      "elapsedMs": 15000
+    },
+    {
+      "stage": "permission",
+      "status": "completed",
+      "elapsedMs": 25
+    },
+    {
+      "stage": "query",
+      "status": "completed",
+      "elapsedMs": 345
+    },
+    {
+      "stage": "result",
+      "status": "completed",
+      "elapsedMs": 9000
+    },
+    {
+      "stage": "CHOOSE_TABLE",
+      "status": "completed",
+      "elapsedMs": 1125.5,
+      "first_output_ms": 200,
+      "total_tokens": 30,
+      "error_class": null
+    },
+    {
+      "stage": "GENERATE_SQL",
+      "status": "completed",
+      "elapsedMs": 14321,
+      "first_output_ms": 200,
+      "total_tokens": 30,
+      "error_class": null
+    },
+    {
+      "stage": "GENERATE_CHART",
+      "status": "completed",
+      "elapsedMs": 8520,
+      "first_output_ms": 200,
+      "total_tokens": 30,
+      "error_class": null
+    }
+  ]
+}

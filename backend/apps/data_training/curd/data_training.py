@@ -145,7 +145,8 @@ def get_all_data_training(session: SessionDep, name: Optional[str] = None, oid: 
     return _list
 
 
-def create_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans: Trans, skip_embedding: bool = False):
+def create_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans: Trans,
+                    skip_embedding: bool = False, commit: bool = True):
     """
     创建单个数据训练记录
     Args:
@@ -200,16 +201,18 @@ def create_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans
     session.add(data_training)
     session.flush()
     session.refresh(data_training)
-    session.commit()
+    if commit:
+        session.commit()
 
     # 处理embedding（批量插入时跳过）
-    if not skip_embedding:
+    if not skip_embedding and commit:
         run_save_data_training_embeddings([data_training.id])
 
     return data_training.id
 
 
-def update_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans: Trans):
+def update_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans: Trans,
+                    skip_embedding: bool = False, commit: bool = True):
     # 基本验证
     if not info.question or not info.question.strip():
         raise Exception(trans("i18n_data_training.question_cannot_be_empty"))
@@ -221,7 +224,7 @@ def update_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans
         raise Exception(trans("i18n_data_training.datasource_assistant_cannot_be_none"))
 
     count = session.query(DataTraining).filter(
-        DataTraining.id == info.id
+        DataTraining.id == info.id, DataTraining.oid == oid
     ).count()
     if count == 0:
         raise Exception(trans('i18n_data_training.data_training_not_exists'))
@@ -243,7 +246,7 @@ def update_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans
     if exists:
         raise Exception(trans("i18n_data_training.exists_in_db"))
 
-    stmt = update(DataTraining).where(and_(DataTraining.id == info.id)).values(
+    stmt = update(DataTraining).where(and_(DataTraining.id == info.id, DataTraining.oid == oid)).values(
         question=info.question.strip(),
         description=info.description.strip(),
         datasource=info.datasource,
@@ -251,10 +254,14 @@ def update_training(session: SessionDep, info: DataTrainingInfo, oid: int, trans
         enabled=info.enabled if info.enabled is not None else True
     )
     session.execute(stmt)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
 
     # embedding
-    run_save_data_training_embeddings([info.id])
+    if not skip_embedding and commit:
+        run_save_data_training_embeddings([info.id])
 
     return info.id
 
@@ -398,20 +405,20 @@ def batch_create_training(session: SessionDep, info_list: List[DataTrainingInfo]
     }
 
 
-def delete_training(session: SessionDep, ids: list[int]):
-    stmt = delete(DataTraining).where(and_(DataTraining.id.in_(ids)))
+def delete_training(session: SessionDep, ids: list[int], oid: int):
+    stmt = delete(DataTraining).where(DataTraining.id.in_(ids), DataTraining.oid == oid)
     session.execute(stmt)
     session.commit()
 
 
-def enable_training(session: SessionDep, id: int, enabled: bool, trans: Trans):
+def enable_training(session: SessionDep, id: int, enabled: bool, trans: Trans, oid: int):
     count = session.query(DataTraining).filter(
-        DataTraining.id == id
+        DataTraining.id == id, DataTraining.oid == oid
     ).count()
     if count == 0:
         raise Exception(trans('i18n_data_training.data_training_not_exists'))
 
-    stmt = update(DataTraining).where(and_(DataTraining.id == id)).values(
+    stmt = update(DataTraining).where(DataTraining.id == id, DataTraining.oid == oid).values(
         enabled=enabled,
     )
     session.execute(stmt)

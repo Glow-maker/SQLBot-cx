@@ -161,6 +161,9 @@ const sendMessage = async () => {
             }
 
             switch (data.type) {
+              case 'interaction':
+                currentRecord.interaction_id = data.interaction_id
+                break
               case 'id':
                 currentRecord.id = data.id
                 break

@@ -17,7 +17,9 @@ import sqlparse
 from langchain.chat_models.base import BaseChatModel
 from langchain_community.utilities import SQLDatabase
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, BaseMessageChunk
+from openai import APITimeoutError
 from sqlalchemy import and_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlbot_xpack.config.model import SysArgModel
 from sqlbot_xpack.custom_prompt.curd.custom_prompt import find_custom_prompts
@@ -333,8 +335,12 @@ class LLMService:
                                                                   operate=OperationEnum.FILTER_TERMS,
                                                                   record_id=self.record.id, local_operation=True)
 
-        self.chat_question.terminologies, term_list = get_terminology_template(_session, self.chat_question.question,
-                                                                               calculate_oid, calculate_ds_id)
+        if self._is_platform_virtual_assistant():
+            from apps.operations.knowledge import platform_templates
+            self.chat_question.terminologies, term_list, _, _ = platform_templates(self, _session)
+        else:
+            self.chat_question.terminologies, term_list = get_terminology_template(_session, self.chat_question.question,
+                                                                                   calculate_oid, calculate_ds_id)
         self.current_logs[OperationEnum.FILTER_TERMS] = end_log(session=_session,
                                                                 log=self.current_logs[OperationEnum.FILTER_TERMS],
                                                                 full_message=term_list)
@@ -371,7 +377,10 @@ class LLMService:
             calculate_oid = self.current_assistant.oid if self.current_assistant.type != 4 else self.current_user.oid
             if self.current_assistant.type == 1:
                 calculate_ds_id = None
-        if self.current_assistant and self.current_assistant.type == 1:
+        if self._is_platform_virtual_assistant():
+            from apps.operations.knowledge import platform_templates
+            _, _, self.chat_question.data_training, example_list = platform_templates(self, _session)
+        elif self.current_assistant and self.current_assistant.type == 1:
             self.chat_question.data_training, example_list = get_training_template(_session,
                                                                                    self.chat_question.question,
                                                                                    calculate_oid,
@@ -406,6 +415,18 @@ class LLMService:
                                                                 log=self.current_logs[OperationEnum.CHOOSE_TABLE],
                                                                 full_message=self.chat_question.db_schema)
 
+    def _with_query_constraints(self, session: Session, messages):
+        from apps.operations.constraints import get_enabled_constraints
+        # Refresh on each model stage so editing/stopping a rule takes effect on
+        # later calls; never retain duplicate rules from a retried SQL message.
+        messages = [message for message in messages
+                    if getattr(message, 'name', None) != 'operations_constraints']
+        rules = get_enabled_constraints(session)
+        if rules:
+            position = 1 if messages and isinstance(messages[0], SystemMessage) else 0
+            messages.insert(position, SystemMessage(content=rules, name='operations_constraints'))
+        return messages
+
     def generate_analysis(self, _session: Session):
         fields = self.get_fields_from_chart(_session)
         self.chat_question.fields = orjson.dumps(fields).decode()
@@ -421,6 +442,7 @@ class LLMService:
 
         analysis_msg.append(SystemMessage(content=self.chat_question.analysis_sys_question()))
         analysis_msg.append(HumanMessage(content=self.chat_question.analysis_user_question()))
+        analysis_msg = self._with_query_constraints(_session, analysis_msg)
 
         self.current_logs[OperationEnum.ANALYSIS] = start_log(session=_session,
                                                               ai_modal_id=self.chat_question.ai_modal_id,
@@ -435,7 +457,7 @@ class LLMService:
         full_thinking_text = ''
         full_analysis_text = ''
         token_usage = {}
-        res = process_stream(self._model_stream(analysis_msg), token_usage)
+        res = process_stream(self._model_stream(analysis_msg, operation=OperationEnum.ANALYSIS), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_analysis_text += chunk.get('content')
@@ -469,6 +491,7 @@ class LLMService:
         predict_msg: List[Union[BaseMessage, dict[str, Any]]] = []
         predict_msg.append(SystemMessage(content=self.chat_question.predict_sys_question()))
         predict_msg.append(HumanMessage(content=self.chat_question.predict_user_question()))
+        predict_msg = self._with_query_constraints(_session, predict_msg)
 
         self.current_logs[OperationEnum.PREDICT_DATA] = start_log(session=_session,
                                                                   ai_modal_id=self.chat_question.ai_modal_id,
@@ -483,7 +506,7 @@ class LLMService:
         full_thinking_text = ''
         full_predict_text = ''
         token_usage = {}
-        res = process_stream(self._model_stream(predict_msg), token_usage)
+        res = process_stream(self._model_stream(predict_msg, operation=OperationEnum.PREDICT_DATA), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_predict_text += chunk.get('content')
@@ -535,7 +558,7 @@ class LLMService:
         full_thinking_text = ''
         full_guess_text = ''
         token_usage = {}
-        res = process_stream(self._model_stream(guess_msg), token_usage)
+        res = process_stream(self._model_stream(guess_msg, operation=OperationEnum.GENERATE_RECOMMENDED_QUESTIONS), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_guess_text += chunk.get('content')
@@ -604,6 +627,7 @@ class LLMService:
                 _ds_list_dict.append(_ds)
             datasource_msg.append(
                 HumanMessage(self.chat_question.datasource_user_question(orjson.dumps(_ds_list_dict).decode())))
+            datasource_msg = self._with_query_constraints(_session, datasource_msg)
 
             self.current_logs[OperationEnum.CHOOSE_DATASOURCE] = start_log(session=_session,
                                                                            ai_modal_id=self.chat_question.ai_modal_id,
@@ -616,7 +640,7 @@ class LLMService:
                                                                                          msg in datasource_msg])
 
             token_usage = {}
-            res = process_stream(self._model_stream(datasource_msg), token_usage)
+            res = process_stream(self._model_stream(datasource_msg, operation=OperationEnum.CHOOSE_DATASOURCE), token_usage)
             for chunk in res:
                 if chunk.get('content'):
                     full_text += chunk.get('content')
@@ -1053,6 +1077,7 @@ class LLMService:
             }).decode()),
         ]
 
+        route_msg = self._with_query_constraints(_session, route_msg)
         yield {"_route_progress": ("selection", "running")}
         self.current_logs[OperationEnum.CHOOSE_DATASOURCE] = start_log(
             session=_session,
@@ -1070,7 +1095,7 @@ class LLMService:
         route_remaining = 30 - (time.perf_counter() - route_started)
         if route_remaining <= 0:
             raise TimeoutError('选表超时，请稍后重试；未开始的查询已取消')
-        res = process_stream(self._model_stream(route_msg, route_remaining), token_usage)
+        res = process_stream(self._model_stream(route_msg, route_remaining, operation=OperationEnum.CHOOSE_TABLE), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_text += chunk.get('content')
@@ -1357,6 +1382,7 @@ class LLMService:
         self.sql_message.append(HumanMessage(
             self.chat_question.sql_user_question(current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                                                  change_title=self.change_title)))
+        self.sql_message = self._with_query_constraints(_session, self.sql_message)
 
         self.current_logs[OperationEnum.GENERATE_SQL] = start_log(session=_session,
                                                                   ai_modal_id=self.chat_question.ai_modal_id,
@@ -1371,7 +1397,7 @@ class LLMService:
         token_usage = {}
         if report_progress:
             yield {"_progress": "waiting_model"}
-        res = process_stream(self._model_stream(self.sql_message), token_usage)
+        res = process_stream(self._model_stream(self.sql_message, operation=OperationEnum.GENERATE_SQL), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_sql_text += chunk.get('content')
@@ -1411,7 +1437,7 @@ class LLMService:
         full_thinking_text = ''
         full_dynamic_text = ''
         token_usage = {}
-        res = process_stream(self._model_stream(dynamic_sql_msg), token_usage)
+        res = process_stream(self._model_stream(dynamic_sql_msg, operation=OperationEnum.GENERATE_DYNAMIC_SQL), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_dynamic_text += chunk.get('content')
@@ -1469,7 +1495,7 @@ class LLMService:
         full_thinking_text = ''
         full_filter_text = ''
         token_usage = {}
-        res = process_stream(self._model_stream(permission_sql_msg), token_usage)
+        res = process_stream(self._model_stream(permission_sql_msg, operation=OperationEnum.GENERATE_SQL_WITH_PERMISSIONS), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_filter_text += chunk.get('content')
@@ -1524,7 +1550,7 @@ class LLMService:
         full_thinking_text = ''
         full_chart_text = ''
         token_usage = {}
-        res = process_stream(self._model_stream(self.chart_message), token_usage)
+        res = process_stream(self._model_stream(self.chart_message, operation=OperationEnum.GENERATE_CHART), token_usage)
         for chunk in res:
             if chunk.get('content'):
                 full_chart_text += chunk.get('content')
@@ -1625,7 +1651,12 @@ class LLMService:
         return sql
 
     def check_save_chart(self, session: Session, res: str) -> Dict[str, Any]:
+        chart = self.parse_chart(res)
+        save_chart(session=session, chart=orjson.dumps(chart).decode(), record_id=self.record.id)
+        return chart
 
+    @staticmethod
+    def parse_chart(res: str, result_fields: Optional[list[str]] = None) -> Dict[str, Any]:
         json_str = extract_nested_json(res)
         if json_str is None:
             raise SingleMessageError(orjson.dumps({'message': 'Cannot parse chart config from answer',
@@ -1641,6 +1672,8 @@ class LLMService:
             if data['type'] and data['type'] != 'error':
                 # todo type check
                 chart = data
+                if result_fields is not None:
+                    return LLMService.validate_result_chart(chart, result_fields)
                 if chart.get('columns'):
                     for v in chart.get('columns'):
                         v['value'] = v.get('value').lower()
@@ -1681,9 +1714,70 @@ class LLMService:
         if error:
             raise SingleMessageError(message)
 
-        save_chart(session=session, chart=orjson.dumps(chart).decode(), record_id=self.record.id)
-
         return chart
+
+    @staticmethod
+    def rule_table_chart(result: dict, status: str) -> dict:
+        return {'type': 'table', 'title': '查询结果',
+                'columns': [{'name': field, 'value': field} for field in result.get('fields') or []],
+                'render_status': status}
+
+    @staticmethod
+    def validate_result_chart(chart: dict, fields: list[str]) -> dict:
+        """A generated view must not replace the usable table with invalid field bindings."""
+        chart_type = chart.get('type')
+        if chart_type == 'table':
+            refs = chart.get('columns')
+        elif chart_type in {'column', 'bar', 'line', 'pie'}:
+            axis = chart.get('axis') or {}
+            y = axis.get('y')
+            y_refs = y if isinstance(y, list) else [y]
+            if not y_refs:
+                raise ValueError('Chart values are missing')
+            refs = [axis.get('series') if chart_type == 'pie' else axis.get('x'), *y_refs]
+            if chart_type != 'pie' and axis.get('series'):
+                refs.append(axis['series'])
+        else:
+            raise ValueError('Unsupported chart type')
+        if not isinstance(refs, list) or not refs:
+            raise ValueError('Chart fields are missing')
+        for ref in refs:
+            if not isinstance(ref, dict) or not isinstance(ref.get('value'), str):
+                raise ValueError('Invalid chart field')
+            value = ref['value']
+            matches = [field for field in fields if field.lower() == value.lower()]
+            if value in fields:
+                actual = value
+            elif len(matches) == 1:
+                actual = matches[0]
+            else:
+                raise ValueError('Chart field is not in the query result')
+            ref['value'] = actual
+            if not isinstance(ref.get('name'), str) or not ref['name']:
+                ref['name'] = actual
+        return chart
+
+    @staticmethod
+    def skip_chart_model(result: dict, chart_type: Optional[str], question: str) -> bool:
+        rows, fields = result.get('data'), result.get('fields') or []
+        if isinstance(rows, list) and not rows:
+            return True
+        visual_question = re.sub(
+            r'(?:不要|无需|不需要|不用)\s*(?:(?:使用|生成|绘制|展示|显示|用|画)\s*)?(?:任何\s*)?'
+            r'(?:柱状图|柱形图|柱图|条形图|折线图|曲线图|饼图|环形图|趋势图|散点图|统计图|分布图|图表|可视化|绘图|图)'
+            r"|\b(?:no|without|do not|don't)\s+(?:(?:use|generate|create|show|draw)\s+)?"
+            r'(?:(?:any|a|an)\s+)?(?:(?:bar|column|line|pie|scatter)\s+)?'
+            r'(?:charts?|plots?|graphs?|visuali[sz]ations?)\b',
+            ' ', question or '', flags=re.IGNORECASE)
+        # Explicit visual intent wins over a suggested table or a one-cell result.
+        if chart_type in {'column', 'bar', 'line', 'pie'} or re.search(
+                r'图表|可视化|柱状|柱形|柱图|条形|折线|曲线|饼图|环形|趋势|占比|'
+                r'绘图|统计图|分布图|散点图|(?:画|绘制|生成|制作|做).{0,6}图|'
+                r'\b(?:charts?|plots?|graphs?|visuali[sz](?:e|ation))\b', visual_question, re.IGNORECASE):
+            return False
+        single_cell = (isinstance(rows, list) and len(rows) == 1 and len(fields) == 1
+                       and isinstance(rows[0], dict) and len(rows[0]) == 1)
+        return chart_type == 'table' or single_cell
 
     def check_save_predict_data(self, session: Session, res: str) -> bool:
 
@@ -1737,8 +1831,12 @@ class LLMService:
         started = time.perf_counter()
         SQLBotLogUtil.info(f"Platform record_id={self.record.id} execution_begin ds_id={self.ds.id}")
         try:
-            return exec_sql(ds=self.ds, sql=sql, origin_column=False,
-                            deadline=getattr(self, 'query_deadline', None))
+            result = exec_sql(ds=self.ds, sql=sql, origin_column=False,
+                              deadline=getattr(self, 'query_deadline', None))
+            capture = getattr(self, 'operations_capture', None)
+            if capture and isinstance(result, dict):
+                capture.query_result(result.get('data'))
+            return result
         except Exception as e:
             if isinstance(e, ParseSQLResultError):
                 raise e
@@ -1752,13 +1850,46 @@ class LLMService:
         if time.monotonic() >= getattr(self, 'query_deadline', float('inf')):
             raise TimeoutError("问数超过120秒，后续查询已取消")
 
-    def _model_stream(self, messages, limit=120):
+    def _model_stream(self, messages, limit=120, *, operation: OperationEnum):
         self._check_deadline()
         deadline = min(getattr(self, 'query_deadline', time.monotonic()+120), time.monotonic()+limit)
         # A model-only producer may outlive the consumer briefly; no database
         # continuation runs there, and read timeout bounds its lifetime.
-        model = self.llm.model_copy(update={'request_timeout': min(30, limit), 'max_retries': 0})
-        yield from bounded_stream(lambda: model.stream(messages), deadline)
+        record_id = self.record.id
+        started = time.perf_counter()
+        first_output_ms = None
+        chunks = 0
+        usage = {}
+        status, error = 'cancelled', None
+        stream = None
+        SQLBotLogUtil.info(f"Model record_id={record_id} operation={operation.name} stream_start")
+        try:
+            model = self.llm.model_copy(update={'request_timeout': min(30, limit), 'max_retries': 0})
+            stream = bounded_stream(lambda: model.stream(messages), deadline)
+            for chunk in stream:
+                chunks += 1
+                # Empty role/usage chunks are not the model's first textual output.
+                if first_output_ms is None and (chunk.content or chunk.additional_kwargs.get('reasoning_content')):
+                    first_output_ms = round((time.perf_counter() - started) * 1000, 1)
+                get_token_usage(chunk, usage)
+                yield chunk
+            status = 'completed'
+        except Exception as exc:
+            status = 'timeout' if isinstance(exc, (TimeoutError, APITimeoutError)) else 'error'
+            error = type(exc).__name__
+            raise
+        finally:
+            if stream is not None and hasattr(stream, 'close'):
+                stream.close()
+            capture = getattr(self, 'operations_capture', None)
+            if capture:
+                capture.model(operation.name, (time.perf_counter() - started) * 1000,
+                              first_output_ms, usage, status, error)
+            SQLBotLogUtil.info(
+                f"Model record_id={record_id} operation={operation.name} stream_end status={status} "
+                f"first_output_ms={first_output_ms} elapsed_ms={(time.perf_counter() - started) * 1000:.1f} "
+                f"chunks={chunks} input_tokens={usage.get('input_tokens')} "
+                f"output_tokens={usage.get('output_tokens')} total_tokens={usage.get('total_tokens')} error={error}")
 
     def pop_chunk(self):
         try:
@@ -1789,13 +1920,14 @@ class LLMService:
 
     def run_task_cache(self, in_chat: bool = True, stream: bool = True,
                        finish_step: ChatFinishStep = ChatFinishStep.GENERATE_CHART):
-        for chunk in self.run_task(in_chat, stream, finish_step):
-            self.chunk_list.append(chunk)
+        from apps.operations.capture import run_captured
+        run_captured(self, self.run_task(in_chat, stream, finish_step))
 
     def run_task(self, in_chat: bool = True, stream: bool = True,
                  finish_step: ChatFinishStep = ChatFinishStep.GENERATE_CHART):
         json_result: Dict[str, Any] = {'success': True}
-        progress = ChatProgress(in_chat)
+        capture = getattr(self, 'operations_capture', None)
+        progress = ChatProgress(in_chat, observer=capture.observe if capture else None)
         _session = None
         try:
             yield from progress.update('route', detail='preparing')
@@ -1828,6 +1960,8 @@ class LLMService:
                 json_result['record_id'] = self.get_record().id
 
             if is_greeting(self.chat_question.question):
+                if capture:
+                    capture.guidance = True
                 message = "你好！请输入需要查询的业务对象、指标和时间范围，例如：统计订单总金额。"
                 save_select_datasource_answer(_session, self.record.id, message)
                 for stage in ('route', 'connect', 'generate', 'permission', 'query', 'result'):
@@ -1849,7 +1983,6 @@ class LLMService:
                         detail_stage, detail_status = chunk['_route_progress']
                         yield from progress.update_detail('route', detail_stage, detail_status)
                         continue
-                    SQLBotLogUtil.info(chunk)
                     if in_chat:
                         yield 'data:' + orjson.dumps(
                             {'content': chunk.get('content'), 'reasoning_content': chunk.get('reasoning_content'),
@@ -2014,6 +2147,13 @@ class LLMService:
             result["data"] = _data
 
             self.save_sql_data(session=_session, data_obj=result)
+            if finish_step.value > ChatFinishStep.QUERY_DATA.value:
+                simple_result = self.skip_chart_model(result, chart_type, self.chat_question.question)
+                chart = self.rule_table_chart(result, 'skipped' if simple_result else 'pending')
+                save_chart(session=_session, chart=orjson.dumps(chart).decode(), record_id=self.record.id)
+                if in_chat:
+                    yield 'data:' + orjson.dumps(
+                        {'content': orjson.dumps(chart).decode(), 'type': 'chart'}).decode() + '\n\n'
             yield from progress.update('query', 'completed')
             if in_chat:
                 yield 'data:' + orjson.dumps({'content': 'execute-success', 'type': 'sql-data'}).decode() + '\n\n'
@@ -2048,39 +2188,55 @@ class LLMService:
 
             # generate chart
             yield from progress.update('result')
-            used_tables_schema = self.out_ds_instance.get_db_schema(
-                self.ds.id, self.chat_question.question, embedding=False,
-                table_list=tables) if self.out_ds_instance else get_table_schema(
-                session=_session,
-                current_user=self.current_user,
-                ds=self.ds,
-                question=self.chat_question.question,
-                embedding=False, table_list=tables)
-            SQLBotLogUtil.info('used_tables_schema: \n' + used_tables_schema)
-            chart_res = self.generate_chart(_session, chart_type, used_tables_schema)
-            full_chart_text = ''
-            for chunk in chart_res:
-                full_chart_text += chunk.get('content')
+            result_detail = 'rule_table' if simple_result else ''
+            if not simple_result:
+                chart_started = time.perf_counter()
+                try:
+                    used_tables_schema = self.out_ds_instance.get_db_schema(
+                        self.ds.id, self.chat_question.question, embedding=False,
+                        table_list=tables) if self.out_ds_instance else get_table_schema(
+                        session=_session,
+                        current_user=self.current_user,
+                        ds=self.ds,
+                        question=self.chat_question.question,
+                        embedding=False, table_list=tables)
+                    chart_res = self.generate_chart(_session, chart_type, used_tables_schema)
+                    full_chart_text = ''
+                    for chunk in chart_res:
+                        full_chart_text += chunk.get('content') or ''
+                        if in_chat:
+                            yield 'data:' + orjson.dumps(
+                                {'content': chunk.get('content'), 'reasoning_content': chunk.get('reasoning_content'),
+                                 'type': 'chart-result'}).decode() + '\n\n'
+                    chart = self.parse_chart(full_chart_text, result.get('fields') or [])
+                    chart['render_status'] = 'ready'
+                except SQLAlchemyError:
+                    raise
+                except Exception as exc:
+                    chart = self.rule_table_chart(result, 'failed')
+                    chart['render_message'] = '查询已完成，图表生成失败，已保留数据明细'
+                    result_detail = 'chart_failed_table_retained'
+                    if capture:
+                        capture.chart_failure(exc, (time.perf_counter() - chart_started) * 1000)
+                    chart_log = self.current_logs.get(OperationEnum.GENERATE_CHART)
+                    if chart_log is not None:
+                        trigger_log_error(_session, chart_log)
+                    SQLBotLogUtil.warning(
+                        f'Chart fallback record_id={self.record.id} error={type(exc).__name__}')
+                # Storage failures remain fatal; only chart generation can fall back.
+                save_chart(session=_session, chart=orjson.dumps(chart).decode(), record_id=self.record.id)
                 if in_chat:
                     yield 'data:' + orjson.dumps(
-                        {'content': chunk.get('content'), 'reasoning_content': chunk.get('reasoning_content'),
-                         'type': 'chart-result'}).decode() + '\n\n'
-            if in_chat:
-                yield 'data:' + orjson.dumps({'type': 'info', 'msg': 'chart generated'}).decode() + '\n\n'
-
-            # filter chart
-            SQLBotLogUtil.info(full_chart_text)
-            chart = self.check_save_chart(session=_session, res=full_chart_text)
-            SQLBotLogUtil.info(chart)
+                        {'content': orjson.dumps(chart).decode(), 'type': 'chart'}).decode() + '\n\n'
+                    if chart['render_status'] == 'failed':
+                        yield 'data:' + orjson.dumps(
+                            {'type': 'chart-warning', 'message': chart['render_message']}).decode() + '\n\n'
 
             if not stream:
                 json_result['chart'] = chart
 
-            yield from progress.update('result', 'completed')
-            if in_chat:
-                yield 'data:' + orjson.dumps(
-                    {'content': orjson.dumps(chart).decode(), 'type': 'chart'}).decode() + '\n\n'
-            else:
+            yield from progress.update('result', 'completed', result_detail)
+            if not in_chat:
                 if stream:
                     md_data, _fields_list = DataFormat.convert_data_fields_for_pandas(chart, result.get('fields'),
                                                                                       result.get('data'))
@@ -2130,6 +2286,8 @@ class LLMService:
 
         except Exception as e:
             yield from progress.fail()
+            if capture:
+                capture.failure(e)
             traceback.print_exc()
             error_msg: str
             if isinstance(e, SingleMessageError):
@@ -2164,8 +2322,8 @@ class LLMService:
         self.future = executor.submit(self.run_recommend_questions_task_cache)
 
     def run_recommend_questions_task_cache(self):
-        for chunk in self.run_recommend_questions_task():
-            self.chunk_list.append(chunk)
+        from apps.operations.capture import run_captured
+        run_captured(self, self.run_recommend_questions_task())
 
     def run_recommend_questions_task(self):
         try:
@@ -2181,7 +2339,10 @@ class LLMService:
                     yield 'data:' + orjson.dumps(
                         {'content': chunk.get('content'), 'reasoning_content': chunk.get('reasoning_content'),
                          'type': 'recommended_question_result'}).decode() + '\n\n'
-        except Exception:
+        except Exception as exc:
+            capture = getattr(self, 'operations_capture', None)
+            if capture:
+                capture.failure(exc)
             traceback.print_exc()
         finally:
             session_maker.remove()
@@ -2192,12 +2353,13 @@ class LLMService:
         self.future = executor.submit(self.run_analysis_or_predict_task_cache, action_type, in_chat, stream)
 
     def run_analysis_or_predict_task_cache(self, action_type: str, in_chat: bool = True, stream: bool = True):
-        for chunk in self.run_analysis_or_predict_task(action_type, in_chat, stream):
-            self.chunk_list.append(chunk)
+        from apps.operations.capture import run_captured
+        run_captured(self, self.run_analysis_or_predict_task(action_type, in_chat, stream))
 
     def run_analysis_or_predict_task(self, action_type: str, in_chat: bool = True, stream: bool = True):
         json_result: Dict[str, Any] = {'success': True}
         _session = None
+        capture = getattr(self, 'operations_capture', None)
         try:
             _session = session_maker()
             if in_chat:
@@ -2292,6 +2454,8 @@ class LLMService:
                                     yield 'generate or fetch chart picture error.\n\n'
                                 raise e
                 else:
+                    if capture:
+                        capture.predict_failed = True
                     if in_chat:
                         yield 'data:' + orjson.dumps({'type': 'predict-failed'}).decode() + '\n\n'
                     else:
@@ -2308,6 +2472,8 @@ class LLMService:
             if not stream:
                 yield json_result
         except Exception as e:
+            if capture:
+                capture.failure(e)
             traceback.print_exc()
             error_msg: str
             if isinstance(e, SingleMessageError):
@@ -2583,7 +2749,6 @@ def process_stream(res: Iterator[BaseMessageChunk],
     pending_start_tag = ''  # 用于缓存可能被截断的开始标签部分
 
     for chunk in res:
-        SQLBotLogUtil.info(chunk)
         reasoning_content_chunk = ''
         content = chunk.content
         output_content = ''  # 实际要输出的内容

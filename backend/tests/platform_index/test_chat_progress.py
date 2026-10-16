@@ -59,7 +59,7 @@ class ChatProgressTests(unittest.TestCase):
 
     def run_service(self, s, finish=ChatFinishStep.GENERATE_CHART, connected=True):
         with ExitStack() as stack:
-            for name in ('session_maker', 'start_log', 'end_log'):
+            for name in ('session_maker', 'start_log', 'end_log', 'save_chart'):
                 stack.enter_context(patch('apps.chat.task.llm.' + name))
             stack.enter_context(patch('apps.chat.task.llm.check_connection', return_value=connected))
             stack.enter_context(patch('apps.chat.task.llm.traceback.print_exc'))

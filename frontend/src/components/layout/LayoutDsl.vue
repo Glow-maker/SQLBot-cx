@@ -16,11 +16,15 @@ import { onBeforeMount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import Menu from './Menu.vue'
+import { useOperationsStore } from '@/stores/operations'
+import FeedbackDialog from '@/components/operations/FeedbackDialog.vue'
 
 const userStore = useUserStore()
+const operationsStore = useOperationsStore()
+const hasManagementEntry = computed(() => userStore.isAdmin || operationsStore.allowed)
 const adminRouter = useRouter()
 const adminRoute = useRoute()
-const showAdminMenu = computed(() => userStore.isAdmin && adminRoute.path.startsWith('/system'))
+const showAdminMenu = computed(() => hasManagementEntry.value && adminRoute.path.startsWith('/system'))
 
 const isPhone = computed(() => {
   return isMobile()
@@ -238,22 +242,25 @@ onBeforeMount(() => {
     </div> -->
     <div
       class="right-main"
-      :class="{ 'right-side-collapse': collapse, 'with-admin-tools': userStore.isAdmin }"
+      :class="{ 'right-side-collapse': collapse, 'with-admin-tools': hasManagementEntry }"
     >
-      <nav v-if="userStore.isAdmin" class="admin-toolbar" aria-label="管理员配置入口">
+      <nav v-if="hasManagementEntry" class="admin-toolbar" aria-label="管理员配置入口">
         <el-button v-if="showAdminMenu" text @click="adminRouter.push('/chat/index')"
           >返回问数</el-button
         >
-        <el-button v-else text @click="adminRouter.push('/system/model')">系统配置</el-button>
+        <el-button v-else text @click="adminRouter.push(userStore.isAdmin ? '/system/model' : '/system/operations/overview')">{{ userStore.isAdmin ? '系统配置' : '问数运营' }}</el-button>
       </nav>
       <div class="content">
         <router-view />
       </div>
+      <el-button class="feedback-entry" @click="operationsStore.openFeedback()">问题反馈</el-button>
+      <FeedbackDialog />
     </div>
   </div>
 </template>
 
 <style lang="less" scoped>
+.feedback-entry { position: fixed; right: 20px; bottom: 18px; z-index: 100; box-shadow: 0 2px 10px #00000012; }
 .system-layout {
   width: 100vw;
   height: 100vh;

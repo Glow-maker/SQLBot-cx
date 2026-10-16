@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { getChartInstance } from '@/views/chat/component/index.ts'
 import type { BaseChart, ChartAxis, ChartData } from '@/views/chat/component/BaseChart.ts'
 import { useEmitt } from '@/utils/useEmitt.ts'
@@ -60,8 +60,11 @@ const axis = computed(() => {
 })
 
 let chartInstance: BaseChart | undefined
+let mounted = false
 
 function renderChart() {
+  if (!mounted) return
+  destroyChart()
   chartInstance = getChartInstance(params.type, chartId.value)
   if (chartInstance) {
     chartInstance.init(axis.value, params.data)
@@ -100,12 +103,16 @@ defineExpose({
 })
 
 onMounted(() => {
+  mounted = true
   nextTick(() => {
     renderChart()
   })
 })
 
+watch(() => [params.id, params.type, params.data, axis.value], renderChart, { flush: 'post' })
+
 onUnmounted(() => {
+  mounted = false
   destroyChart()
 })
 </script>

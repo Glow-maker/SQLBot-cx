@@ -29,6 +29,7 @@ class RouteBoundaryTests(unittest.TestCase):
     def reject(self, entries, answer, reason):
         service = self.service(entries, answer)
         with patch("apps.chat.task.llm.start_log"), patch("apps.chat.task.llm.end_log"), \
+             patch("apps.operations.constraints.get_enabled_constraints", return_value="管理员启用的业务选表提示"), \
              patch("apps.chat.task.llm.process_stream", return_value=iter([{"content": json.dumps(answer)}])):
             with self.assertRaises(Exception) as caught:
                 list(service.route_logical_datasource(None))

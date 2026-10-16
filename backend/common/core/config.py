@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     PLATFORM_AUTH_REQUIRE_USER_TYPE: int | None = None
     PLATFORM_AUTH_STRICT_MODE: bool = False
     PLATFORM_AUTH_ACCEPT_AUTHORIZATION_HEADER: bool = True
-    PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN: bool = False
+    PLATFORM_AUTH_ALLOW_LOCAL_ADMIN_LOGIN: bool = True
     PLATFORM_AUTH_LOCAL_ADMIN_ACCOUNTS: str = "admin"
 
     # === 数据中台 data 服务（数据源元数据来源，主线二 Phase 2 启用）===

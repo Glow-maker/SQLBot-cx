@@ -216,7 +216,9 @@ export class Table extends BaseChart {
   }
 
   destroy() {
+    this.debounceRender?.cancel()
     this.table?.destroy()
+    this.table = undefined
     this.resizeObserver?.disconnect()
   }
 }

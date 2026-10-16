@@ -1,9 +1,14 @@
 <script lang="ts" setup>
-import { nextTick, onMounted, reactive, ref, unref } from 'vue'
-import icon_export_outlined from '@/assets/svg/icon_export_outlined.svg'
-import { professionalApi } from '@/api/professional'
-import { formatTimestamp } from '@/utils/date'
+import { knowledgeApi, knowledgeSources, knowledgeScopeReady } from '@/api/knowledge'
+import { useOperationsStore } from '@/stores/operations'
+import KnowledgeContext from '@/views/system/operations/KnowledgeContext.vue'
+import { useRoute } from 'vue-router'
 import { datasourceApi } from '@/api/datasource'
+import icon_export_outlined from '@/assets/svg/icon_export_outlined.svg'
+import Uploader from '@/views/system/excel-upload/Uploader.vue'
+import { computed, watch, nextTick, onMounted, reactive, ref, unref } from 'vue'
+import { professionalApi as localProfessionalApi } from '@/api/professional'
+import { formatTimestamp } from '@/utils/date'
 import icon_add_outlined from '@/assets/svg/icon_add_outlined.svg'
 import IconOpeEdit from '@/assets/svg/icon_edit_outlined.svg'
 import IconOpeDelete from '@/assets/svg/icon_delete.svg'
@@ -14,10 +19,18 @@ import { cloneDeep } from 'lodash-es'
 import { convertFilterText, FilterText } from '@/components/filter-text'
 import { DrawerMain } from '@/components/drawer-main'
 import iconFilter from '@/assets/svg/icon-filter_outlined.svg'
-import Uploader from '@/views/system/excel-upload/Uploader.vue'
+
+const ops = useOperationsStore()
+const route = useRoute()
+const operationsMode = computed(() => route.meta.operations === true)
+const scopedApi = knowledgeApi('terminology')
+const api = computed(() => (operationsMode.value ? scopedApi : localProfessionalApi))
 
 interface Form {
   id?: string | null
+  report_id?: string | number
+  draft_id?: string
+  enabled?: boolean
   word: string | null
   other_words: string[]
   specific_ds: boolean
@@ -38,9 +51,8 @@ const selectable = () => {
   return true
 }
 onMounted(() => {
-  datasourceApi.list().then((res) => {
-    filterOption.value[0].option = [...res]
-  })
+  applyDraft()
+  list()
   search()
 })
 const dialogFormVisible = ref<boolean>(false)
@@ -62,6 +74,7 @@ const state = reactive<any>({
 const dialogTitle = ref('')
 const updateLoading = ref(false)
 const defaultForm = {
+  enabled: operationsMode.value ? false : undefined,
   id: null,
   word: null,
   description: null,
@@ -70,14 +83,9 @@ const defaultForm = {
   other_words: [''],
   datasource_names: [],
 }
-const pageForm = ref<Form>(cloneDeep(defaultForm))
-
-const cancelDelete = () => {
-  handleToggleRowSelection(false)
-  multipleSelectionAll.value = []
-  checkAll.value = false
-  isIndeterminate.value = false
-}
+const pageForm = ref<Form>(
+  cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined })
+)
 
 const exportExcel = () => {
   ElMessageBox.confirm(t('professional.export_hint', { msg: pageInfo.total }), {
@@ -88,7 +96,7 @@ const exportExcel = () => {
     autofocus: false,
   }).then(() => {
     searchLoading.value = true
-    professionalApi
+    localProfessionalApi
       .export2Excel(keywords.value ? { word: keywords.value } : {})
       .then((res) => {
         const blob = new Blob([res], {
@@ -132,6 +140,13 @@ const exportExcel = () => {
   })
 }
 
+const cancelDelete = () => {
+  handleToggleRowSelection(false)
+  multipleSelectionAll.value = []
+  checkAll.value = false
+  isIndeterminate.value = false
+}
+
 const deleteBatch = () => {
   ElMessageBox.confirm(
     t('professional.selected_2_terms', { msg: multipleSelectionAll.value.length }),
@@ -143,7 +158,7 @@ const deleteBatch = () => {
       autofocus: false,
     }
   ).then(() => {
-    professionalApi.deleteEmbedded(multipleSelectionAll.value.map((ele) => ele.id)).then(() => {
+    api.value.deleteEmbedded(multipleSelectionAll.value.map((ele) => ele.id)).then(() => {
       ElMessage({
         type: 'success',
         message: t('dashboard.delete_success'),
@@ -161,7 +176,7 @@ const deleteHandler = (row: any) => {
     customClass: 'confirm-no_icon',
     autofocus: false,
   }).then(() => {
-    professionalApi.deleteEmbedded([row.id]).then(() => {
+    api.value.deleteEmbedded([row.id]).then(() => {
       multipleSelectionAll.value = multipleSelectionAll.value.filter((ele) => row.id !== ele.id)
       ElMessage({
         type: 'success',
@@ -213,12 +228,14 @@ const handleToggleRowSelection = (check: boolean = true) => {
 const configParams = () => {
   let str = ''
   if (keywords.value) {
-    str += `word=${keywords.value}`
+    str += `word=${encodeURIComponent(keywords.value)}`
   }
 
   state.conditions.forEach((ele: any) => {
     ele.value.forEach((itx: any) => {
-      str += str ? `&${ele.field}=${itx}` : `${ele.field}=${itx}`
+      str += str
+        ? `&${ele.field}=${encodeURIComponent(itx)}`
+        : `${ele.field}=${encodeURIComponent(itx)}`
     })
   })
 
@@ -228,15 +245,24 @@ const configParams = () => {
   return str
 }
 
+let searchVersion = 0
 const search = ($event: any = {}) => {
+  const version = ++searchVersion
+  if (operationsMode.value && !knowledgeScopeReady()) {
+    fieldList.value = []
+    pageInfo.total = 0
+    searchLoading.value = false
+    return
+  }
   if ($event?.isComposing) {
     return
   }
   searchLoading.value = true
   oldKeywords.value = keywords.value
-  professionalApi
+  api.value
     .getList(pageInfo.currentPage, pageInfo.pageSize, configParams())
     .then((res) => {
+      if (version !== searchVersion) return
       toggleRowLoading.value = true
       fieldList.value = res.data
       pageInfo.total = res.total_count
@@ -246,7 +272,7 @@ const search = ($event: any = {}) => {
       })
     })
     .finally(() => {
-      searchLoading.value = false
+      if (version === searchVersion) searchLoading.value = false
     })
 }
 
@@ -298,7 +324,7 @@ const saveHandler = () => {
         delete obj.id
       }
       updateLoading.value = true
-      professionalApi
+      api.value
         .updateEmbedded(obj)
         .then(() => {
           ElMessage({
@@ -315,8 +341,12 @@ const saveHandler = () => {
   })
 }
 const list = () => {
-  datasourceApi.list().then((res) => {
+  const context = JSON.stringify([route.path, ops.context])
+  const sourceRequest = operationsMode.value ? knowledgeSources() : datasourceApi.list()
+  sourceRequest.then((res) => {
+    if (context !== JSON.stringify([route.path, ops.context])) return
     allDsList.value = res
+    filterOption.value[0].option = res
   })
 }
 const editHandler = (row: any) => {
@@ -335,7 +365,7 @@ const editHandler = (row: any) => {
 }
 
 const onFormClose = () => {
-  pageForm.value = cloneDeep(defaultForm)
+  pageForm.value = cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined })
   dialogFormVisible.value = false
 }
 
@@ -357,7 +387,7 @@ const handleRowClick = (row: any) => {
 }
 
 const onRowFormClose = () => {
-  pageForm.value = cloneDeep(defaultForm)
+  pageForm.value = cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined })
   rowInfoDialog.value = false
 }
 
@@ -409,7 +439,7 @@ const drawerMainClose = () => {
 }
 
 const changeStatus = (id: any, val: any) => {
-  professionalApi
+  api.value
     .enable(id, val + '')
     .then(() => {
       ElMessage({
@@ -421,10 +451,41 @@ const changeStatus = (id: any, val: any) => {
       search()
     })
 }
+
+const changeContext = () => {
+  onFormClose()
+  rowInfoDialog.value = false
+  fieldList.value = []
+  checkAll.value = false
+  isIndeterminate.value = false
+  multipleSelectionAll.value = []
+  pageInfo.currentPage = 1
+  state.conditions = []
+  state.filterTexts = []
+  allDsList.value = []
+  filterOption.value[0].option = []
+  list()
+  search()
+}
+const applyDraft = () => {
+  const draft = ops.draft
+  if (!operationsMode.value || !draft || draft.kind !== 'terminology') return
+  ops.scope = draft.scope
+  ops.tenantId = draft.tenantId
+  editHandler({
+    ...cloneDeep({ ...defaultForm, enabled: operationsMode.value ? false : undefined }),
+    ...draft.values,
+    enabled: false,
+  })
+  ops.draft = null
+}
+
+watch(operationsMode, changeContext)
 </script>
 
 <template>
   <div v-loading="searchLoading" class="professional">
+    <KnowledgeContext v-if="operationsMode" @change="changeContext" />
     <div class="tool-left">
       <span class="page-title">{{ $t('professional.professional_terminology') }}</span>
       <div class="tool-row">
@@ -441,25 +502,32 @@ const changeStatus = (id: any, val: any) => {
             </el-icon>
           </template>
         </el-input>
-        <el-button secondary @click="exportExcel">
-          <template #icon>
-            <icon_export_outlined />
-          </template>
-          {{ $t('professional.export_all') }}
-        </el-button>
-        <Uploader
-          upload-path="/system/terminology/uploadExcel"
-          template-path="/system/terminology/template"
-          :template-name="`${t('professional.professional_terminology')}.xlsx`"
-          @upload-finished="search"
-        />
+        <template v-if="!operationsMode">
+          <el-button secondary @click="exportExcel">
+            <template #icon>
+              <icon_export_outlined />
+            </template>
+            {{ $t('professional.export_all') }}
+          </el-button>
+          <Uploader
+            upload-path="/system/terminology/uploadExcel"
+            template-path="/system/terminology/template"
+            :template-name="`${t('professional.professional_terminology')}.xlsx`"
+            @upload-finished="search"
+          />
+        </template>
         <el-button class="no-margin" secondary @click="drawerMainOpen">
           <template #icon>
             <iconFilter></iconFilter>
           </template>
           {{ $t('user.filter') }}
         </el-button>
-        <el-button class="no-margin" type="primary" @click="editHandler(null)">
+        <el-button
+          class="no-margin"
+          type="primary"
+          :disabled="operationsMode && !knowledgeScopeReady()"
+          @click="editHandler(null)"
+        >
           <template #icon>
             <icon_add_outlined></icon_add_outlined>
           </template>
@@ -621,6 +689,12 @@ const changeStatus = (id: any, val: any) => {
     :before-close="onFormClose"
     modal-class="professional-add_drawer"
   >
+    <el-alert
+      v-if="operationsMode && !pageForm.id"
+      title="新建内容保存为停用草稿，核对后在列表中启用。"
+      type="info"
+      :closable="false"
+    />
     <el-form
       ref="termFormRef"
       :model="pageForm"
@@ -774,6 +848,9 @@ const changeStatus = (id: any, val: any) => {
 .professional {
   height: 100%;
   position: relative;
+  overflow: auto;
+  padding: 20px 24px 72px;
+  box-sizing: border-box;
 
   .datasource-yet {
     padding-bottom: 0;
@@ -786,6 +863,8 @@ const changeStatus = (id: any, val: any) => {
   }
 
   .tool-left {
+    flex-wrap: wrap;
+    gap: 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -797,6 +876,7 @@ const changeStatus = (id: any, val: any) => {
       line-height: 28px;
     }
     .tool-row {
+      flex-wrap: wrap;
       display: flex;
       align-items: center;
       flex-direction: row;

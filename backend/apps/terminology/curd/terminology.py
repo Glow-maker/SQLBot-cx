@@ -221,7 +221,7 @@ def get_all_terminology(session: SessionDep, name: Optional[str] = None, oid: Op
 
 
 def create_terminology(session: SessionDep, info: TerminologyInfo, oid: int, trans: Trans,
-                       skip_embedding: bool = False):
+                       skip_embedding: bool = False, commit: bool = True):
     """
     创建单个术语记录
     Args:
@@ -324,10 +324,11 @@ def create_terminology(session: SessionDep, info: TerminologyInfo, oid: int, tra
         session.bulk_save_objects(child_list)
         session.flush()
 
-    session.commit()
+    if commit:
+        session.commit()
 
     # 处理embedding（批量插入时跳过）
-    if not skip_embedding:
+    if not skip_embedding and commit:
         run_save_terminology_embeddings([parent.id])
 
     return parent.id
@@ -500,7 +501,8 @@ def batch_create_terminology(session: SessionDep, info_list: List[TerminologyInf
     }
 
 
-def update_terminology(session: SessionDep, info: TerminologyInfo, oid: int, trans: Trans):
+def update_terminology(session: SessionDep, info: TerminologyInfo, oid: int, trans: Trans,
+                       skip_embedding: bool = False, commit: bool = True):
     count = session.query(Terminology).filter(
         Terminology.oid == oid,
         Terminology.id == info.id
@@ -561,7 +563,7 @@ def update_terminology(session: SessionDep, info: TerminologyInfo, oid: int, tra
     if exists:
         raise Exception(trans("i18n_terminology.exists_in_db"))
 
-    stmt = update(Terminology).where(and_(Terminology.id == info.id)).values(
+    stmt = update(Terminology).where(and_(Terminology.id == info.id, Terminology.oid == oid)).values(
         word=info.word.strip(),
         description=info.description.strip(),
         specific_ds=specific_ds,
@@ -569,11 +571,11 @@ def update_terminology(session: SessionDep, info: TerminologyInfo, oid: int, tra
         enabled=info.enabled,
     )
     session.execute(stmt)
-    session.commit()
+    session.flush()
 
-    stmt = delete(Terminology).where(and_(Terminology.pid == info.id))
+    stmt = delete(Terminology).where(and_(Terminology.pid == info.id, Terminology.oid == oid))
     session.execute(stmt)
-    session.commit()
+    session.flush()
 
     create_time = datetime.datetime.now()
     # 插入子记录（其他词）
@@ -597,28 +599,30 @@ def update_terminology(session: SessionDep, info: TerminologyInfo, oid: int, tra
     if child_list:
         session.bulk_save_objects(child_list)
         session.flush()
-    session.commit()
+    if commit:
+        session.commit()
 
     # embedding
-    run_save_terminology_embeddings([info.id])
+    if not skip_embedding and commit:
+        run_save_terminology_embeddings([info.id])
 
     return info.id
 
 
-def delete_terminology(session: SessionDep, ids: list[int]):
-    stmt = delete(Terminology).where(or_(Terminology.id.in_(ids), Terminology.pid.in_(ids)))
+def delete_terminology(session: SessionDep, ids: list[int], oid: int):
+    stmt = delete(Terminology).where(Terminology.oid == oid, or_(Terminology.id.in_(ids), Terminology.pid.in_(ids)))
     session.execute(stmt)
     session.commit()
 
 
-def enable_terminology(session: SessionDep, id: int, enabled: bool, trans: Trans):
+def enable_terminology(session: SessionDep, id: int, enabled: bool, trans: Trans, oid: int):
     count = session.query(Terminology).filter(
-        Terminology.id == id
+        Terminology.id == id, Terminology.oid == oid
     ).count()
     if count == 0:
         raise Exception(trans('i18n_terminology.terminology_not_exists'))
 
-    stmt = update(Terminology).where(or_(Terminology.id == id, Terminology.pid == id)).values(
+    stmt = update(Terminology).where(Terminology.oid == oid, or_(Terminology.id == id, Terminology.pid == id)).values(
         enabled=enabled,
     )
     session.execute(stmt)

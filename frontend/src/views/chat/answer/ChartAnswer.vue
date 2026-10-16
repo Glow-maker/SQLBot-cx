@@ -87,13 +87,20 @@ const _loading = computed({
 })
 
 const avatarRequest = useAvatarRequest(event => emits('avatarState', event))
-watch(() => props.currentChat, () => { stop(); progress.value = undefined })
+watch([() => props.currentChat, () => props.message?.record], () => {
+  stop()
+  progress.value = undefined
+  loadHistoricalData()
+})
 const stopFlag = ref(false)
 const progress = ref<ChatProgress>()
+let receivedResult: ChatRecord | undefined
+let disposed = false
 
 const sendMessage = async () => {
   stopFlag.value = false
   loadingData.value = false
+  receivedResult = undefined
   progress.value = createProgress()
   const currentProgress = progress.value
   _loading.value = true
@@ -104,6 +111,7 @@ const sendMessage = async () => {
   }
 
   const currentRecord: ChatRecord = _currentChat.value.records[index.value]
+  currentRecord.chart_warning = undefined
 
   let error: boolean = false
   if (_currentChatId.value === undefined) {
@@ -113,7 +121,19 @@ const sendMessage = async () => {
   const requestChat = _currentChat.value
   const requestIndex = index.value
   const run = avatarRequest.begin(_currentChatId.value, requestIndex,
-    () => _currentChat.value === requestChat && requestChat.records[requestIndex] === currentRecord)
+    () => _currentChat.value === requestChat && index.value === requestIndex &&
+      props.message?.record === currentRecord && requestChat.records[requestIndex] === currentRecord)
+
+  let resultLoad: Promise<unknown> | undefined
+  let resultLoadFailed = false
+  let resultLoaded = false
+  let emptyResult = false
+  function keepReceivedResult() {
+    currentRecord.chart_warning ||= '连接已中断，已保留查询结果；图表更新可能未完成'
+    endProgress(currentProgress, 'stopped', '查询结果已返回，连接已中断')
+    run.update('stopped')
+    emits('stop')
+  }
 
   try {
     const controller = run.controller
@@ -135,9 +155,6 @@ const sendMessage = async () => {
     let chart_answer = ''
 
     let tempResult = ''
-    let resultLoad: Promise<unknown> | undefined
-    let resultLoadFailed = false
-    let emptyResult = false
 
     while (true) {
       if (stopFlag.value) {
@@ -148,6 +165,12 @@ const sendMessage = async () => {
       const { done, value } = await reader.read()
       if (!run.current()) return
       if (done) {
+        if (resultLoad) await resultLoad
+        if (!run.current()) return
+        if (resultLoaded) {
+          keepReceivedResult()
+          break
+        }
         endProgress(currentProgress, 'failed', '连接已中断，未收到完成结果')
         currentRecord.error = '连接已中断，未收到完成结果，请重试'
         run.update('error')
@@ -193,6 +216,9 @@ const sendMessage = async () => {
             }
 
             switch (data.type) {
+              case 'interaction':
+                currentRecord.interaction_id = data.interaction_id
+                break
               case 'progress':
                 // Structured events are handled by receiveProgress above.
                 break
@@ -252,6 +278,8 @@ const sendMessage = async () => {
                     const parsed = typeof response === 'string' ? JSON.parse(response) : response
                     const rows = Array.isArray(parsed) ? parsed : parsed?.data
                     emptyResult = Array.isArray(rows) && rows.length === 0
+                    resultLoaded = true
+                    receivedResult = currentRecord
                   }).catch(() => {
                     if (!run.current()) return
                     resultLoadFailed = true
@@ -266,6 +294,9 @@ const sendMessage = async () => {
                 break
               case 'chart':
                 currentRecord.chart = data.content
+                break
+              case 'chart-warning':
+                currentRecord.chart_warning = typeof data.message === 'string' ? data.message : '图表生成失败，已保留数据明细'
                 break
               case 'datasource':
                 if (!_currentChat.value.datasource) {
@@ -297,6 +328,12 @@ const sendMessage = async () => {
     }
   } catch (error) {
     if (!run.current()) return
+    if (resultLoad) await resultLoad
+    if (!run.current()) return
+    if (resultLoaded && !currentRecord.error) {
+      keepReceivedResult()
+      return
+    }
     endProgress(currentProgress, 'failed', progressError(error))
     run.update('error')
     if (!currentRecord.error) {
@@ -317,13 +354,12 @@ const loadingData = ref(false)
 
 function getChatData(recordId?: number, current?: () => boolean) {
   const targetChat = _currentChat.value
-  const isCurrent = current ?? (() => _currentChat.value === targetChat)
+  const targetRecord = props.message?.record
+  const isCurrent = current ?? (() => !disposed && _currentChat.value === targetChat && props.message?.record === targetRecord)
   loadingData.value = true
   return chatApi.get_chart_data(recordId).then(response => {
     if (isCurrent()) {
-      targetChat.records.forEach(record => {
-        if (record.id === recordId) record.data = response
-      })
+      if (targetRecord && targetRecord.id === recordId) targetRecord.data = response
     }
     return response
   }).finally(() => {
@@ -335,7 +371,10 @@ function getChatData(recordId?: number, current?: () => boolean) {
 }
 
 function stop() {
-  if (progress.value?.outcome === 'running') endProgress(progress.value, 'stopped', '已停止接收')
+  if (progress.value?.outcome === 'running') {
+    endProgress(progress.value, 'stopped', '已停止接收')
+    if (receivedResult) receivedResult.chart_warning ||= '已停止接收，已保留查询结果；图表更新可能未完成'
+  }
   loadingData.value = false
   if (!avatarRequest.cancel()) return
   stopFlag.value = true
@@ -344,14 +383,16 @@ function stop() {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
   stop()
 })
 
-onMounted(() => {
+function loadHistoricalData() {
   if (props.message?.record?.id && props.message?.record?.finish) {
     getChatData(props.message.record.id).catch(() => { /* Historical results keep their existing error UI. */ })
   }
-})
+}
+onMounted(loadHistoricalData)
 
 defineExpose({ sendMessage, index: () => index.value, stop })
 </script>

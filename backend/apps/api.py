@@ -9,10 +9,15 @@ from apps.mcp import mcp
 from apps.system.api import login, user, aimodel, workspace, assistant, parameter, apikey, variable_api, appearance
 from apps.terminology.api import terminology
 from apps.settings.api import base
+from apps.operations import api as operations_api, constraints, knowledge, reports
 #from audit.api import audit_api
 
 
 api_router = APIRouter()
+api_router.include_router(operations_api.router)
+api_router.include_router(constraints.router)
+api_router.include_router(knowledge.router)
+api_router.include_router(reports.router)
 api_router.include_router(platform_embeddings.router)
 api_router.include_router(platform_catalog.router)
 api_router.include_router(login.router)

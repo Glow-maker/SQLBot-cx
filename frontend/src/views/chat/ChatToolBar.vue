@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { datetimeFormat } from '@/utils/utils.ts'
 import type { ChatMessage } from '@/api/chat.ts'
+import { useOperationsStore } from '@/stores/operations'
+const operationsStore = useOperationsStore()
 
 defineProps<{
   message: ChatMessage
@@ -11,6 +13,7 @@ defineProps<{
   <div class="tool-container">
     <div class="tool-btns">
       <slot></slot>
+      <el-button v-if="message.record?.id || message.record?.interaction_id" text size="small" @click="operationsStore.openFeedback(message.record.id, 'submit', message.record.interaction_id)">反馈</el-button>
     </div>
     <div class="tool-times">
       <div></div>

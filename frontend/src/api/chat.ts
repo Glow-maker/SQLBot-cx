@@ -32,6 +32,7 @@ export interface ChatMessage {
 }
 
 export class ChatRecord {
+  interaction_id?: number
   datasource_select_answer?: string
   id?: number
   chat_id?: number
@@ -43,6 +44,7 @@ export class ChatRecord {
   data?: string | any
   chart_answer?: string
   chart?: string
+  chart_warning?: string
   analysis?: string
   analysis_thinking?: string
   predict?: string

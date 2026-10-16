@@ -22,7 +22,7 @@ class TenantMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(auth.settings, 'PLATFORM_AUTH_ENABLED', True), \
              patch.object(auth.settings, 'PLATFORM_AUTH_STRICT_MODE', True), \
              patch.object(auth.settings, 'PLATFORM_AUTH_REQUIRE_TENANT_ID_HEADER', True), \
-             patch.object(auth.TokenMiddleware, 'validateToken', AsyncMock(return_value=(True, SimpleNamespace(oid=124)))), \
+             patch.object(auth.TokenMiddleware, 'validateToken', AsyncMock(return_value=(True, SimpleNamespace(oid=124, auth_source='platform')))), \
              patch.object(auth.TokenMiddleware, '_inject_platform_assistant_if_enabled'):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
                 for tenant in [None, '999', 'invalid']:

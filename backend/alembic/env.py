@@ -33,7 +33,10 @@ from common.core.config import settings # noqa
 #from apps.datasource.models.datasource import SQLModel
 
 from apps.datasource.embedding.platform_models import Base as PlatformEmbeddingBase
-target_metadata = [SQLModel.metadata, PlatformEmbeddingBase.metadata]
+from apps.operations import models as operations_models
+from apps.operations import constraint_models
+from apps.operations.knowledge_models import Base as KnowledgeBase
+target_metadata = [SQLModel.metadata, PlatformEmbeddingBase.metadata, KnowledgeBase.metadata]
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

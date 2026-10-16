@@ -220,11 +220,42 @@ export const routes = [
         },
       },
       {
+        path: 'operations',
+        name: 'operations',
+        redirect: '/system/operations/overview',
+        meta: { title: '问数运营', iconActive: 'log', iconDeActive: 'noLog', operations: true },
+        children: ['overview', 'users', 'interactions', 'feedback', 'reports', 'grants'].map((section, index) => ({
+          path: section,
+          name: `operations-${section}`,
+          component: () => import('@/views/system/operations/OperationsPage.vue'),
+          props: { section },
+          meta: { title: ['概览', '用户分析', '问数明细', '反馈处理', '归因报告', '授权管理'][index], operations: true, instanceAdmin: section === 'grants' },
+        })),
+      },
+      {
         path: 'setting',
         meta: { title: t('system.system_settings'), iconActive: 'set', iconDeActive: 'noSet' },
         redirect: 'system_/appearance',
         name: 'setting',
         children: [
+          {
+            path: 'constraints',
+            name: 'operations-constraints',
+            component: () => import('@/views/system/constraints.vue'),
+            meta: { title: '问数约束', instanceAdmin: true },
+          },
+          {
+            path: 'terminology',
+            name: 'operations-terminology',
+            component: Professional,
+            meta: { title: '术语配置', operations: true },
+          },
+          {
+            path: 'sql-examples',
+            name: 'operations-sql-examples',
+            component: Training,
+            meta: { title: 'SQL 示例库', operations: true },
+          },
           {
             path: 'appearance',
             name: 'appearance',

@@ -61,7 +61,14 @@ async def lifespan(app: FastAPI):
     await sqlbot_xpack.core.clean_xpack_cache()
     await async_model_info()  # 异步加密已有模型的密钥和地址
     await sqlbot_xpack.core.monitor_app(app)
+    from apps.operations.capture import start_cleanup
+    from apps.operations.reports import start_report_worker, close_report_worker
+    from common.core.db import engine
+    start_report_worker()
+    operations_stop = start_cleanup(engine)
     yield
+    operations_stop.set()
+    close_report_worker()
     from fastapi.concurrency import run_in_threadpool
     await run_in_threadpool(get_platform_index().close)
     SQLBotLogUtil.info("SQLBot 应用关闭")

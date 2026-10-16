@@ -30,6 +30,12 @@ from common.audit.schemas.logger_decorator import LogConfig, system_log
 router = APIRouter(tags=["Data Q&A"], prefix="/chat")
 
 
+def _interaction_events(capture, events):
+    if capture:
+        yield 'data:' + orjson.dumps({'type': 'interaction', 'interaction_id': capture.id}).decode() + '\n\n'
+    yield from events
+
+
 @router.get("/list", response_model=List[Chat], summary=f"{PLACEHOLDER_PREFIX}get_chat_list")
 async def chats(session: SessionDep, current_user: CurrentUser):
     return list_chats(session, current_user)
@@ -230,6 +236,7 @@ async def ask_recommend_questions(session: SessionDep, current_user: CurrentUser
     def _return_empty():
         yield 'data:' + orjson.dumps({'content': '[]', 'type': 'recommended_question'}).decode() + '\n\n'
 
+    capture = None
     try:
         from apps.chat.task.record_access import require_record_access
         record = require_record_access(session, current_user, chat_record_id)
@@ -237,13 +244,23 @@ async def ask_recommend_questions(session: SessionDep, current_user: CurrentUser
         if not record:
             return StreamingResponse(_return_empty(), media_type="text/event-stream")
 
+        # The worker outlives the request session; pass independent field values.
+        record = ChatRecord(id=record.id, chat_id=record.chat_id, question=record.question,
+                            datasource=record.datasource, engine_type=record.engine_type,
+                            ai_modal_id=record.ai_modal_id, create_by=record.create_by)
         request_question = ChatQuestion(chat_id=record.chat_id, question=record.question if record.question else '')
-
+        from apps.operations.capture import begin
+        capture = begin(session, current_user, request_question, 'recommend', chat_record_id)
         llm_service = await LLMService.create(session, current_user, request_question, current_assistant, True)
+        if capture:
+            capture.attach(llm_service)
         llm_service.set_record(record)
         llm_service.set_articles_number(articles_number)
         llm_service.run_recommend_questions_task_async()
     except Exception as e:
+        if capture:
+            capture.failure(e)
+            capture.finish()
         traceback.print_exc()
 
         def _err(_e: Exception):
@@ -379,26 +396,35 @@ async def question_answer_inner(session: SessionDep, current_user: CurrentUser, 
 async def stream_sql(session: SessionDep, current_user: CurrentUser, request_question: ChatQuestion,
                      current_assistant: Optional[CurrentAssistant] = None, in_chat: bool = True, stream: bool = True,
                      finish_step: ChatFinishStep = ChatFinishStep.GENERATE_CHART, embedding: bool = False):
+    capture = None
     try:
+        from apps.operations.capture import begin
+        parent_record_id = getattr(request_question, 'regenerate_record_id', None)
+        capture = begin(session, current_user, request_question, 'retry' if parent_record_id else 'question', parent_record_id)
         llm_service = await LLMService.create(session, current_user, request_question, current_assistant,
                                               embedding=embedding)
+        if capture:
+            capture.attach(llm_service)
         llm_service.init_record(session=session)
         llm_service.run_task_async(in_chat=in_chat, stream=stream, finish_step=finish_step)
     except Exception as e:
+        if capture:
+            capture.failure(e)
+            capture.finish()
         traceback.print_exc()
 
         if stream:
             def _err(_e: Exception):
                 yield 'data:' + orjson.dumps({'content': str(_e), 'type': 'error'}).decode() + '\n\n'
 
-            return StreamingResponse(_err(e), media_type="text/event-stream")
+            return StreamingResponse(_interaction_events(capture, _err(e)), media_type="text/event-stream")
         else:
             return JSONResponse(
-                content={'message': str(e)},
+                content={'message': str(e), 'interaction_id': capture.id if capture else None},
                 status_code=500,
             )
     if stream:
-        return StreamingResponse(llm_service.await_result(), media_type="text/event-stream")
+        return StreamingResponse(_interaction_events(capture, llm_service.await_result()), media_type="text/event-stream")
     else:
         res = llm_service.await_result()
         raw_data = {}
@@ -425,6 +451,7 @@ async def analysis_or_predict_question(session: SessionDep, current_user: Curren
 
 async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, chat_record_id: int, action_type: str,
                               current_assistant: CurrentAssistant, in_chat: bool = True, stream: bool = True):
+    capture = None
     try:
         from apps.chat.task.record_access import require_record_access
         require_record_access(session, current_user, chat_record_id)
@@ -451,10 +478,16 @@ async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, ch
                 f"Chat record with id {chat_record_id} has not generated chart, do not support to analyze it")
 
         request_question = ChatQuestion(chat_id=record.chat_id, question=record.question)
-
+        from apps.operations.capture import begin
+        capture = begin(session, current_user, request_question, action_type, chat_record_id)
         llm_service = await LLMService.create(session, current_user, request_question, current_assistant)
+        if capture:
+            capture.attach(llm_service)
         llm_service.run_analysis_or_predict_task_async(session, action_type, record, in_chat, stream)
     except Exception as e:
+        if capture:
+            capture.failure(e)
+            capture.finish()
         traceback.print_exc()
         if stream:
             def _err(_e: Exception):
@@ -464,14 +497,14 @@ async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, ch
                     yield f'&#x274c; **ERROR:**\n'
                     yield f'> {str(_e)}\n'
 
-            return StreamingResponse(_err(e), media_type="text/event-stream")
+            return StreamingResponse(_interaction_events(capture, _err(e)), media_type="text/event-stream")
         else:
             return JSONResponse(
-                content={'message': str(e)},
+                content={'message': str(e), 'interaction_id': capture.id if capture else None},
                 status_code=500,
             )
     if stream:
-        return StreamingResponse(llm_service.await_result(), media_type="text/event-stream")
+        return StreamingResponse(_interaction_events(capture, llm_service.await_result()), media_type="text/event-stream")
     else:
         res = llm_service.await_result()
         raw_data = {}

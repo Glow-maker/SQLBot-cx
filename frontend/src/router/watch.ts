@@ -6,9 +6,12 @@ import { request } from '@/utils/request'
 import type { Router } from 'vue-router'
 import { generateDynamicRouters } from './dynamic'
 import { toLoginPage } from '@/utils/utils'
+import { useOperationsStore } from '@/stores/operations'
+import { canOpenSystemRoute } from '@/views/system/operations/operationsPolicy'
 
 const appearanceStore = useAppearanceStoreWithOut()
 const userStore = useUserStore()
+const operationsStore = useOperationsStore()
 const { wsCache } = useCache()
 const whiteList = ['/login', '/admin-login']
 const assistantWhiteList = ['/assistant', '/embeddedPage', '/embeddedCommon', '/401']
@@ -45,6 +48,7 @@ export const watchRouter = (router: Router) => {
         return
       }
     }
+    await operationsStore.loadAccess()
     if (to.path === '/' || accessCrossPermission(to)) {
       next('/chat')
       return
@@ -61,7 +65,7 @@ export const watchRouter = (router: Router) => {
 const accessCrossPermission = (to: any) => {
   if (!to?.path) return false
   return (
-    (to.path.startsWith('/system') && !userStore.isAdmin) ||
+    (to.path.startsWith('/system') && !canOpenSystemRoute(to.meta || {}, userStore.isAdmin, operationsStore.access)) ||
     (to.path.startsWith('/set') && !userStore.isSpaceAdmin)
   )
 }

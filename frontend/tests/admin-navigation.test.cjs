@@ -8,7 +8,7 @@ const { renderToString } = require('vue/server-renderer')
 const { parse, compileScript } = require('@vue/compiler-sfc')
 const { transformSync } = require('esbuild')
 
-async function renderLayout(isAdmin, routePath) {
+async function renderLayout(isAdmin, routePath, operator = false) {
   const source = fs.readFileSync(path.join(__dirname, '../src/components/layout/LayoutDsl.vue'), 'utf8')
   const { descriptor } = parse(source)
   const script = compileScript(descriptor, { id: 'admin-layout-test', inlineTemplate: true })
@@ -17,6 +17,8 @@ async function renderLayout(isAdmin, routePath) {
     vue,
     'vue-router': { useRoute: () => ({ path: routePath }), useRouter: () => ({ push() {} }) },
     '@/stores/user': { useUserStore: () => ({ isAdmin }) },
+    '@/stores/operations': { useOperationsStore: () => ({ allowed: operator, openFeedback() {} }) },
+    '@/components/operations/FeedbackDialog.vue': { __esModule: true, default: { render: () => null } },
     '@/utils/useEmitt': { useEmitt() {} },
     '@/utils/utils': { isMobile: () => false },
     './Menu.vue': { __esModule: true, default: { render: () => vue.h('div', '管理菜单') } },
@@ -46,4 +48,11 @@ test('ordinary users have no admin entry or configuration sidebar', async () => 
     assert.ok(!html.includes('管理员配置入口'))
     assert.ok(!html.includes('系统管理菜单'))
   }
+})
+
+test('an operator gets an operations entry without the legacy administrator title', async () => {
+  const html = await renderLayout(false, '/chat/index', true)
+  assert.ok(html.includes('问数运营'))
+  assert.ok(!html.includes('系统配置'))
+  assert.ok(html.includes('问题反馈'))
 })

@@ -1,7 +1,10 @@
 
 import base64
+import hashlib
 import json
+import time
 from typing import Optional
+import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
 import jwt
@@ -28,6 +31,8 @@ class TokenMiddleware(BaseHTTPMiddleware):
     
     def __init__(self, app):
         super().__init__(app)
+        # Bound to verified token identity; never share authority by account name.
+        self._platform_admin_cache = {}
 
     async def dispatch(self, request, call_next):
         
@@ -40,6 +45,7 @@ class TokenMiddleware(BaseHTTPMiddleware):
         if askToken:
             validate_pass, data = await self.validateAskToken(askToken, trans)
             if validate_pass:
+                data.auth_source = 'ask'
                 request.state.current_user = data
                 return await call_next(request)
             message = trans('i18n_permission.authenticate_invalid', msg = data)
@@ -48,6 +54,7 @@ class TokenMiddleware(BaseHTTPMiddleware):
         if assistantToken:
             validator: tuple[any] = await self.validateAssistant(assistantToken, trans)
             if validator[0]:
+                validator[1].auth_source = 'assistant'
                 request.state.current_user = validator[1]
                 if request.state.current_user and trans.lang:
                     request.state.current_user.language = trans.lang
@@ -65,7 +72,8 @@ class TokenMiddleware(BaseHTTPMiddleware):
             token = request.headers.get("Authorization")
         validate_pass, data = await self.validateToken(token, trans, request.url.path)
         if validate_pass:
-            if settings.PLATFORM_AUTH_ENABLED and settings.PLATFORM_AUTH_STRICT_MODE:
+            if (settings.PLATFORM_AUTH_ENABLED and settings.PLATFORM_AUTH_STRICT_MODE
+                    and getattr(data, 'auth_source', None) == 'platform'):
                 tenant = request.headers.get(settings.PLATFORM_AUTH_TENANT_ID_HEADER)
                 if ((tenant is None and settings.PLATFORM_AUTH_REQUIRE_TENANT_ID_HEADER)
                         or (tenant is not None and tenant != str(data.oid))):
@@ -136,18 +144,16 @@ class TokenMiddleware(BaseHTTPMiddleware):
         if schema.lower() != "bearer":
             return False, f"Token schema error!"
         try:
-            # 兼容模式：仅 chat 路由优先走中台 Redis token
-            # strict 模式：所有 bearer token 都强制走中台 Redis token
+            # All SQLBot pages accept a verified platform token. Compatibility
+            # mode still falls back to local JWT when no platform identity exists.
             platform_auth_enabled = settings.PLATFORM_AUTH_ENABLED
             platform_auth_strict = settings.PLATFORM_AUTH_STRICT_MODE
-            should_try_platform = platform_auth_enabled and (
-                platform_auth_strict or self._is_chat_request(request_path)
-            )
 
-            if should_try_platform:
+            if platform_auth_enabled:
                 platform_identity = await resolve_platform_token_identity(param)
                 if platform_identity:
-                    return True, self._build_user_from_platform_token(platform_identity)
+                    is_admin = await self._resolve_platform_admin(param, platform_identity)
+                    return True, self._build_user_from_platform_token(platform_identity, is_admin=is_admin)
                 if platform_auth_strict:
                     local_admin_user = await self._try_local_admin_user(param, trans)
                     if local_admin_user:
@@ -199,6 +205,7 @@ class TokenMiddleware(BaseHTTPMiddleware):
             if not session_user.oid or session_user.oid == 0:
                 message = trans('i18n_login.no_associated_ws', msg=trans('i18n_concat_admin'))
                 raise Exception(message)
+            session_user.auth_source = 'local'
             return session_user
 
     async def _try_local_admin_user(self, token_value: str, trans: I18n) -> Optional[UserInfoDTO]:
@@ -212,12 +219,6 @@ class TokenMiddleware(BaseHTTPMiddleware):
             return local_user
         return None
 
-    def _is_chat_request(self, request_path: Optional[str]) -> bool:
-        if not request_path:
-            return False
-        chat_prefix = f"{settings.API_V1_STR}/chat"
-        return request_path == chat_prefix or request_path.startswith(f"{chat_prefix}/")
-
     def _inject_platform_assistant_if_enabled(self, request: Request, token_value: Optional[str]) -> None:
         """
         主线二 Phase 2a：注入"虚拟 assistant"到 request.state，让 chat 主流程通过现有
@@ -226,7 +227,7 @@ class TokenMiddleware(BaseHTTPMiddleware):
         触发条件：
         - settings.PLATFORM_DATASOURCE_ENABLED = true
         - settings.PLATFORM_DATASOURCE_BASE_URL 已配置
-        - 已成功解析出 current_user（说明已通过中台或本地认证）
+        - current_user 已通过中台认证（auth_source 为 platform）
         - request.state.assistant 还未被赋值（避免覆盖业务真实 assistant 链路）
 
         构造的虚拟 AssistantHeader：
@@ -245,7 +246,7 @@ class TokenMiddleware(BaseHTTPMiddleware):
         if getattr(request.state, "assistant", None):
             return
         current_user: Optional[UserInfoDTO] = getattr(request.state, "current_user", None)
-        if current_user is None:
+        if current_user is None or getattr(current_user, 'auth_source', None) != 'platform':
             return
         if not token_value:
             return
@@ -285,10 +286,46 @@ class TokenMiddleware(BaseHTTPMiddleware):
             # 注入失败不阻塞主流程，仅记日志，下游 select_datasource 会回退本地 ds
             SQLBotLogUtil.exception(f"Inject platform virtual assistant failed: {exc}")
 
-    def _build_user_from_platform_token(self, identity: PlatformTokenIdentity) -> UserInfoDTO:
+    async def _resolve_platform_admin(self, token_value: str, identity: PlatformTokenIdentity) -> bool:
+        base_url = settings.PLATFORM_AUTH_BASE_URL
+        if not base_url:
+            return False
+        key = (hashlib.sha256(token_value.encode()).digest(), identity.user_id,
+               identity.tenant_id, base_url)
+        now = time.monotonic()
+        cached = self._platform_admin_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+        is_admin, ttl = False, 5
+        try:
+            async with httpx.AsyncClient(timeout=min(3.0, settings.PLATFORM_AUTH_HTTP_TIMEOUT_SECONDS)) as client:
+                response = await client.get(base_url.rstrip('/') + '/admin-api/system/auth/get-permission-info',
+                    headers={'Authorization': 'Bearer ' + token_value,
+                             settings.PLATFORM_AUTH_TENANT_ID_HEADER: str(identity.tenant_id)})
+            response.raise_for_status()
+            body = response.json()
+            data = body.get('data') if isinstance(body, dict) and body.get('code') == 0 else None
+            user = data.get('user') if isinstance(data, dict) else None
+            user_id = user.get('id') if isinstance(user, dict) else None
+            roles = data.get('roles') if isinstance(data, dict) else None
+            if (isinstance(user_id, bool) or not isinstance(user_id, (int, str)) or int(user_id) != identity.user_id
+                    or not isinstance(roles, list) or not all(isinstance(role, str) for role in roles)):
+                raise ValueError('Invalid verified role identity')
+            is_admin = bool({'super_admin', 'tenant_admin'}.intersection(roles))
+            ttl = 30
+        except (httpx.HTTPError, ValueError, TypeError):
+            # Ordinary login remains usable; a failed lookup never grants admin.
+            SQLBotLogUtil.warning('Platform administrator role verification unavailable')
+        if len(self._platform_admin_cache) >= 512:
+            self._platform_admin_cache = {k: v for k, v in self._platform_admin_cache.items() if v[0] > now}
+            if len(self._platform_admin_cache) >= 512:
+                self._platform_admin_cache.pop(next(iter(self._platform_admin_cache)))
+        self._platform_admin_cache[key] = (time.monotonic() + ttl, is_admin)
+        return is_admin
+
+    def _build_user_from_platform_token(self, identity: PlatformTokenIdentity, *, is_admin: bool = False) -> UserInfoDTO:
         # 中台 token 恢复用户：chat 仅依赖 id/account/oid，其他字段使用安全默认值
         nickname = identity.nickname or identity.account
-        is_admin = str(identity.account).lower() == "admin" or int(identity.user_id) == 1
         return UserInfoDTO(
             id=int(identity.user_id),
             account=str(identity.account),
@@ -300,6 +337,8 @@ class TokenMiddleware(BaseHTTPMiddleware):
             language="zh-CN",
             weight=1 if is_admin else 0,
             isAdmin=is_admin,
+            auth_source='platform',
+            platform_admin_verified=is_admin,
         )
             
     
