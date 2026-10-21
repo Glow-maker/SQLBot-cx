@@ -72,12 +72,6 @@ class TokenMiddleware(BaseHTTPMiddleware):
             token = request.headers.get("Authorization")
         validate_pass, data = await self.validateToken(token, trans, request.url.path)
         if validate_pass:
-            if (settings.PLATFORM_AUTH_ENABLED and settings.PLATFORM_AUTH_STRICT_MODE
-                    and getattr(data, 'auth_source', None) == 'platform'):
-                tenant = request.headers.get(settings.PLATFORM_AUTH_TENANT_ID_HEADER)
-                if ((tenant is None and settings.PLATFORM_AUTH_REQUIRE_TENANT_ID_HEADER)
-                        or (tenant is not None and tenant != str(data.oid))):
-                    return JSONResponse("租户不匹配", status_code=403)
             request.state.current_user = data
             # 主线二 Phase 2a：当中台数据源接入开启时，注入虚拟 assistant 到 request.state，
             # 让下游 chat 主流程通过现有 AssistantOutDs 链路从中台 data 服务远程拉 ds，

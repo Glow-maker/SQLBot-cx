@@ -6,7 +6,7 @@ const vm = require('node:vm')
 const { transformSync } = require('esbuild')
 const axios = require('axios')
 
-function fixture(responses = []) {
+function fixture(responses = [], identityResponses = []) {
   let state = { token: 'current', tenantId: 124 }
   let renewals = 0
   const calls = []
@@ -18,8 +18,14 @@ function fixture(responses = []) {
   }
   const nextResponse = async config => {
     calls.push(config)
-    const response = responses.shift() || { status: 200, data: { code: 0, data: value } }
-    return typeof response === 'function' ? response(() => { state = {} }) : response
+    const isIdentity = config.url === '/user/info'
+    const token = config.headers?.get?.('X-SQLBOT-TOKEN') ?? config.headers?.['X-SQLBOT-TOKEN']
+    const user = token === 'Bearer other' ? { id: 42, oid: 999 } : { id: 31, oid: 124 }
+    const response = (isIdentity ? identityResponses.shift() : responses.shift()) || (
+      isIdentity ? { status: 200, data: { ...user, auth_source: 'platform' } }
+        : { status: 200, data: { code: 0, data: value } }
+    )
+    return typeof response === 'function' ? response(() => { state = {} }, s => { state = s }) : response
   }
   const requestModules = {
     axios: { ...axios, create(config) {
@@ -48,23 +54,49 @@ function fixture(responses = []) {
   } }
   vm.runInNewContext(requestCode, requestSandbox)
   const source = fs.readFileSync(path.join(__dirname, '../src/api/indexSync.ts'), 'utf8')
-  const code = transformSync(source, { loader: 'ts', format: 'cjs' }).code
+  const code = transformSync(source, {
+    loader: 'ts', format: 'cjs', define: { 'import.meta.env.VITE_API_BASE_URL': '"/api/v1"' },
+  }).code
   const sandbox = { window, module: { exports: {} }, require(name) {
     if (name === '@/utils/request') return requestSandbox.module.exports
     assert.equal(name, 'axios')
-    return { request: nextResponse }
+    return { ...axios, request: nextResponse }
   } }
   vm.runInNewContext(code, sandbox)
-  return { api: sandbox.module.exports, calls, window, setState: s => { state = s }, renewals: () => renewals }
+  return {
+    api: sandbox.module.exports, calls, window, setState: s => { state = s }, renewals: () => renewals,
+    dataCalls: () => calls.filter(call => call.url.startsWith(urlPrefix)),
+    identityCalls: () => calls.filter(call => call.url === '/user/info'),
+  }
 }
 
-test('reads shared configuration with current host identity and does not trigger sync', async () => {
+const urlPrefix = '/admin-api/dmgt/data-source/index-sync'
+
+test('verifies the current token before reading shared configuration without triggering sync', async () => {
   const f = fixture(); await f.api.getIndexSyncControl()
-  assert.equal(f.calls.length, 1)
-  assert.equal(f.calls[0].method, 'GET')
-  assert.equal(f.calls[0].url, '/admin-api/dmgt/data-source/index-sync')
-  assert.equal(f.calls[0].headers.Authorization, 'Bearer current')
-  assert.equal(f.calls[0].headers['tenant-id'], '124')
+  assert.equal(f.calls.length, 2)
+  assert.equal(f.identityCalls()[0].baseURL, '/api/v1')
+  assert.equal(f.identityCalls()[0].headers['X-SQLBOT-TOKEN'], 'Bearer current')
+  assert.equal(f.identityCalls()[0].headers['tenant-id'], undefined)
+  const [call] = f.dataCalls()
+  assert.equal(call.method, 'GET')
+  assert.equal(call.url, urlPrefix)
+  assert.equal(call.headers.Authorization, 'Bearer current')
+  assert.equal(call.headers['tenant-id'], '124')
+})
+test('missing or stale host tenant does not override the verified token tenant', async () => {
+  for (const hostState of [{ token: 'current' }, { token: 'current', tenantId: 999 }]) {
+    const f = fixture(); f.setState(hostState)
+    await f.api.syncAllIndexes(false)
+    assert.equal(f.dataCalls()[0].headers['tenant-id'], '124')
+    assert.equal(f.dataCalls()[0].headers.Authorization, 'Bearer current')
+  }
+})
+test('a second tenant uses its own verified identity despite a different host tenant', async () => {
+  const f = fixture(); f.setState({ token: 'other', tenantId: 124 })
+  await f.api.getIndexSyncControl()
+  assert.equal(f.dataCalls()[0].headers['tenant-id'], '999')
+  assert.equal(f.dataCalls()[0].headers.Authorization, 'Bearer other')
 })
 test('logged-out host never falls back to stale injected identity', async () => {
   const f = fixture(); f.setState({})
@@ -75,19 +107,124 @@ test('refreshes both HTTP and business 401 once with updated Authorization', asy
   for (const response of [{ status: 401, data: {} }, { status: 200, data: { code: 401 } }]) {
     const f = fixture([response]); await f.api.getIndexSyncControl()
     assert.equal(f.renewals(), 1)
-    assert.equal(f.calls[1].headers.Authorization, 'Bearer renewed')
+    assert.equal(f.identityCalls().length, 2)
+    assert.equal(f.dataCalls()[1].headers.Authorization, 'Bearer renewed')
+    assert.equal(f.dataCalls()[1].headers['tenant-id'], '124')
+  }
+})
+test('identity 401 renews once and verifies the renewed token before calling Data', async () => {
+  const f = fixture([], [{ status: 401, data: {} }])
+  await f.api.getIndexSyncControl()
+  assert.equal(f.renewals(), 1)
+  assert.equal(f.identityCalls().length, 2)
+  assert.equal(f.identityCalls()[1].headers['X-SQLBOT-TOKEN'], 'Bearer renewed')
+  assert.equal(f.dataCalls().length, 1)
+  assert.equal(f.dataCalls()[0].headers.Authorization, 'Bearer renewed')
+})
+test('identity and Data failures share one renewal budget', async () => {
+  const f = fixture([{ status: 401, data: {} }], [{ status: 401, data: {} }])
+  await assert.rejects(f.api.getIndexSyncControl(), /登录|身份/)
+  assert.equal(f.renewals(), 1)
+  assert.equal(f.identityCalls().length, 2)
+  assert.equal(f.dataCalls().length, 1)
+})
+test('concurrent expired identities share one in-flight host renewal', async () => {
+  const f = fixture([], [{ status: 401, data: {} }, { status: 401, data: {} }])
+  let renewals = 0
+  let release
+  const renewal = new Promise(resolve => { release = resolve })
+  f.window.__SQLBOT_REFRESH_LOGIN_STATE__ = async () => {
+    renewals++
+    await renewal
+    f.setState({ token: 'renewed', tenantId: 999 })
+  }
+  const pending = Promise.allSettled([
+    f.api.getIndexSyncControl(),
+    f.api.getIndexSyncControl(),
+  ])
+  await new Promise(resolve => setImmediate(resolve))
+  const observedRenewals = renewals
+  release()
+  const results = await pending
+  assert.equal(observedRenewals, 1)
+  assert.ok(results.every(result => result.status === 'fulfilled'))
+  assert.equal(f.dataCalls().length, 2)
+  assert.ok(f.dataCalls().every(call => call.headers.Authorization === 'Bearer renewed'))
+  assert.ok(f.dataCalls().every(call => call.headers['tenant-id'] === '124'))
+})
+test('writes with initially expired identity require resubmission without calling Data', async () => {
+  for (const token of ['renewed', 'other']) {
+    for (const operation of [
+      api => api.syncAllIndexes(false),
+      api => api.saveIndexSchedule({ enabled: false, time: '21:30', force: false }),
+    ]) {
+      const f = fixture([], [{ status: 401, data: {} }])
+      let renewals = 0
+      f.window.__SQLBOT_REFRESH_LOGIN_STATE__ = async () => {
+        renewals++
+        f.setState({ token, tenantId: 124 })
+      }
+      await assert.rejects(operation(f.api), /重新提交索引操作/)
+      assert.equal(renewals, 1)
+      assert.equal(f.dataCalls().length, 0)
+    }
+  }
+})
+test('persistent identity 401 never reaches Data and stops after one renewal', async () => {
+  const f = fixture([], [{ status: 401, data: {} }, { status: 401, data: {} }])
+  await assert.rejects(f.api.getIndexSyncControl(), /登录|身份/)
+  assert.equal(f.renewals(), 1)
+  assert.equal(f.identityCalls().length, 2)
+  assert.equal(f.dataCalls().length, 0)
+})
+test('failed or unverified identities never authorize a Data operation', async () => {
+  const invalid = [
+    { status: 403, data: {} },
+    { status: 500, data: {} },
+    { status: 200, data: '<html>host page</html>' },
+    { status: 200, data: { id: 31, oid: 124, auth_source: 'local' } },
+    { status: 200, data: { oid: 124, auth_source: 'platform' } },
+    { status: 200, data: { id: 31, auth_source: 'platform' } },
+    { status: 200, data: { id: 31, oid: 'not-a-tenant', auth_source: 'platform' } },
+  ]
+  for (const response of invalid) {
+    const f = fixture([], [response])
+    await assert.rejects(f.api.syncAllIndexes(false), /身份|登录|中台/)
+    assert.equal(f.dataCalls().length, 0)
+    assert.equal(f.renewals(), 0)
   }
 })
 test('does not retry permission denial or mask it as empty results', async () => {
   const f = fixture([{ status: 200, data: { code: 403 } }])
   await assert.rejects(f.api.syncAllIndexes(true), /没有中台索引同步权限/)
-  assert.equal(f.calls.length, 1); assert.equal(f.renewals(), 0)
+  assert.equal(f.dataCalls().length, 1); assert.equal(f.renewals(), 0)
 })
 test('rejects tenant changes while refreshing rather than submitting under a different tenant', async () => {
   const f = fixture([{ status: 401, data: {} }])
   f.window.__SQLBOT_REFRESH_LOGIN_STATE__ = async () => { f.setState({ token: 'other', tenantId: 999 }) }
-  await assert.rejects(f.api.syncAllIndexes(false), /从业务中台登录/)
-  assert.equal(f.calls.length, 1)
+  await assert.rejects(f.api.syncAllIndexes(false), /登录状态|身份|租户/)
+  assert.equal(f.dataCalls().length, 1)
+  assert.equal(f.identityCalls().length, 2)
+})
+test('a changed verified user also aborts renewal within the same tenant', async () => {
+  const f = fixture([{ status: 401, data: {} }], [
+    { status: 200, data: { id: 31, oid: 124, auth_source: 'platform' } },
+    { status: 200, data: { id: 42, oid: 124, auth_source: 'platform' } },
+  ])
+  await assert.rejects(f.api.syncAllIndexes(false), /登录状态|身份/)
+  assert.equal(f.renewals(), 1)
+  assert.equal(f.dataCalls().length, 1)
+})
+test('logout or token replacement during identity verification prevents Data requests', async () => {
+  for (const nextState of [{}, { token: 'other', tenantId: 999 }]) {
+    const f = fixture([], [(_logout, setState) => {
+      setState(nextState)
+      return { status: 200, data: { id: 31, oid: 124, auth_source: 'platform' } }
+    }])
+    await assert.rejects(f.api.syncAllIndexes(false), /登录状态|登录已|身份/)
+    assert.equal(f.dataCalls().length, 0)
+    assert.equal(f.renewals(), 0)
+  }
 })
 test('rejects late responses after logout and invalid proxy HTML', async () => {
   const f = fixture([logout => { logout(); return { status: 200, data: { code: 0, data: { enabled: false, time: '22:00' } } } }])
@@ -95,18 +232,29 @@ test('rejects late responses after logout and invalid proxy HTML', async () => {
   const html = fixture([{ status: 200, data: '<html>host page</html>' }])
   await assert.rejects(html.api.getIndexSyncControl(), /无法获取中台索引配置/)
 })
+test('a late Data response cannot complete under a replacement token', async () => {
+  const f = fixture([(_logout, setState) => {
+    setState({ token: 'other', tenantId: 999 })
+    return { status: 200, data: { code: 0, data: { enabled: false, time: '22:00' } } }
+  }])
+  await assert.rejects(f.api.getIndexSyncControl(), /登录状态|身份/)
+  assert.equal(f.dataCalls().length, 1)
+  assert.equal(f.renewals(), 0)
+})
 test('persistent 401 stops after one renewal', async () => {
   const f = fixture([{ status: 401, data: {} }, { status: 401, data: {} }])
   await assert.rejects(f.api.getIndexSyncControl(), /登录已失效/)
-  assert.equal(f.calls.length, 2)
+  assert.equal(f.dataCalls().length, 2)
+  assert.equal(f.renewals(), 1)
 })
 test('manual sync and schedule use existing Data contracts', async () => {
   const f = fixture(); await f.api.syncAllIndexes(false)
   await f.api.saveIndexSchedule({ enabled: false, time: '21:30', force: false })
-  assert.equal(f.calls[0].method, 'POST'); assert.equal(f.calls[0].url.endsWith('/all'), true)
-  assert.equal(f.calls[0].data.force, false)
-  assert.equal(f.calls[1].method, 'PUT'); assert.equal(f.calls[1].url.endsWith('/schedule'), true)
-  assert.equal(f.calls[1].data.enabled, false)
+  const calls = f.dataCalls()
+  assert.equal(calls[0].method, 'POST'); assert.equal(calls[0].url.endsWith('/all'), true)
+  assert.equal(calls[0].data.force, false)
+  assert.equal(calls[1].method, 'PUT'); assert.equal(calls[1].url.endsWith('/schedule'), true)
+  assert.equal(calls[1].data.enabled, false)
 })
 
 test('task detail uses authenticated SQLBot request with current host token and tenant', async () => {

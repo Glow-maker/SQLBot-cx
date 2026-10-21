@@ -26,17 +26,18 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
 
-    async def request(self, body, status=200):
+    async def request(self, body, status=200, headers=None):
+        headers = self.headers if headers is None else headers
         def handle(request):
             self.assertEqual(str(request.url), "http://data.test/openapi/sqlbot/datasources/query")
-            self.assertEqual(request.headers['authorization'], "Bearer current-user")
-            self.assertEqual(request.headers['tenant-id'], "124")
+            self.assertEqual(request.headers['authorization'], headers['Authorization'])
+            self.assertEqual(request.headers['tenant-id'], str(self.identity.tenant_id))
             return httpx.Response(status, json=body)
 
         remote = httpx.AsyncClient(transport=httpx.MockTransport(handle))
         with patch.object(auth_api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
              patch.object(api.httpx, "AsyncClient", return_value=remote):
-            return await self.client.get(self.path, headers=self.headers)
+            return await self.client.get(self.path, headers=headers)
 
     async def test_only_authorized_names_are_returned_without_connection_or_fields(self):
         body = {"code": 0, "data": [{"id": 1, "name": "销售测试", "host": "private-host",
@@ -67,15 +68,26 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.json()['tables']), 6)
         self.assertEqual(response.json()['tables'][0]['question'], "查看来源0中的订单的前10条数据")
 
-    async def test_anonymous_expired_and_wrong_tenant_never_fetch_catalog(self):
+    async def test_anonymous_invalid_and_expired_tokens_never_fetch_catalog(self):
         self.assertEqual((await self.client.get(self.path)).status_code, 401)
-        with patch.object(auth_api, "resolve_platform_token_identity", AsyncMock(return_value=None)):
-            self.assertEqual((await self.client.get(self.path, headers=self.headers)).status_code, 401)
-        with patch.object(auth_api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
+        with patch.object(auth_api, "resolve_platform_token_identity", AsyncMock(return_value=None)), \
              patch.object(api.httpx, "AsyncClient") as remote:
-            wrong_tenant = await self.client.get(self.path, headers={**self.headers, 'tenant-id': '125'})
-            self.assertEqual(wrong_tenant.status_code, 403)
+            for token in ('invalid', 'expired'):
+                response = await self.client.get(self.path, headers={'Authorization': f'Bearer {token}'})
+                self.assertEqual(response.status_code, 401)
             remote.assert_not_called()
+
+    async def test_token_tenant_controls_catalog_with_missing_or_untrusted_header(self):
+        for verified_tenant in (124, 125):
+            self.identity = SimpleNamespace(tenant_id=verified_tenant, user_id=361)
+            for tenant in (None, '', 'invalid', '124', '125'):
+                with self.subTest(verified_tenant=verified_tenant, tenant=tenant):
+                    headers = {'Authorization': f'Bearer user-{verified_tenant}'}
+                    if tenant is not None:
+                        headers['tenant-id'] = tenant
+                    response = await self.request({'code': 0, 'data': []}, headers=headers)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json(), {'tables': [], 'total': 0})
 
     async def test_permission_service_failure_never_falls_back_to_local_or_index(self):
         for status, body, expected in [(403, {}, 403), (200, {'code': 401}, 401),

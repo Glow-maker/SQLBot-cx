@@ -28,9 +28,6 @@ async def platform_identity(request: Request):
         raise HTTPException(503, "中台身份服务暂不可用") from None
     if identity is None:
         raise HTTPException(401, "中台登录已失效")
-    tenant = request.headers.get(settings.PLATFORM_AUTH_TENANT_ID_HEADER)
-    if tenant != str(identity.tenant_id):
-        raise HTTPException(403, "租户不匹配")
     return identity, token
 
 

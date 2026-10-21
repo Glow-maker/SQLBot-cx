@@ -20,13 +20,41 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.settings.stop()
 
-    async def test_anonymous_expired_and_wrong_tenant(self):
+    async def test_anonymous_invalid_and_expired_tokens_are_unauthorized(self):
         path = "/platform/table-embeddings/sync?datasourceId=3"
         self.assertEqual((await self.client.get(path)).status_code, 401)
-        with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=None)):
-            self.assertEqual((await self.client.get(path, headers={"Authorization":"Bearer expired", "tenant-id":"1"})).status_code, 401)
-        with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)):
-            self.assertEqual((await self.client.get(path, headers={"Authorization":"Bearer test", "tenant-id":"2"})).status_code, 403)
+        with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=None)), \
+             patch.object(api, "get_platform_index") as index:
+            for token in ("invalid", "expired"):
+                self.assertEqual((await self.client.get(path, headers={"Authorization":f"Bearer {token}", "tenant-id":"1"})).status_code, 401)
+            index.assert_not_called()
+
+    async def test_token_tenant_controls_latest_job_and_upstream_data_access(self):
+        for verified_tenant in (1, 2):
+            identity = SimpleNamespace(tenant_id=verified_tenant, user_id=7)
+            for tenant in (None, "", "invalid", "1", "2"):
+                with self.subTest(verified_tenant=verified_tenant, tenant=tenant):
+                    headers = {"Authorization": f"Bearer user-{verified_tenant}"}
+                    if tenant is not None:
+                        headers["tenant-id"] = tenant
+
+                    def handle(request):
+                        self.assertEqual(str(request.url), "http://data.test/openapi/sqlbot/datasources/3/embedding-access")
+                        self.assertEqual(request.headers["authorization"], headers["Authorization"])
+                        self.assertEqual(request.headers["tenant-id"], str(verified_tenant))
+                        return httpx.Response(200, json={"code": 0, "data": {
+                            "tenantId": verified_tenant, "datasourceId": 3}})
+
+                    remote = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+                    with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=identity)), \
+                         patch.object(api.settings, "PLATFORM_DATASOURCE_ENABLED", True), \
+                         patch.object(api.settings, "PLATFORM_DATASOURCE_BASE_URL", "http://data.test"), \
+                         patch.object(api.httpx, "AsyncClient", return_value=remote), \
+                         patch.object(api, "get_platform_index") as index:
+                        index.return_value.get.return_value = None
+                        response = await self.client.get("/platform/table-embeddings/sync?datasourceId=3", headers=headers)
+                        self.assertEqual(response.status_code, 200)
+                        index.return_value.get.assert_called_once_with(verified_tenant, None, 3)
 
     async def test_forbidden_submission_does_not_enqueue(self):
         from fastapi import HTTPException
@@ -34,7 +62,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
              patch.object(api, "platform_get", AsyncMock(side_effect=HTTPException(403, "Denied"))), \
              patch.object(api, "get_platform_index") as index:
             response = await self.client.post("/platform/table-embeddings/sync", json={"datasourceId":3},
-                headers={"Authorization":"Bearer test", "tenant-id":"1"})
+                headers={"Authorization":"Bearer test", "tenant-id":"2"})
             self.assertEqual(response.status_code, 403)
             index.assert_not_called()
 
@@ -46,6 +74,32 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Authorization":"Bearer test", "tenant-id":"1"})
             self.assertEqual(response.status_code, 502)
             index.assert_not_called()
+
+    async def test_foreign_tenant_or_datasource_snapshot_does_not_enqueue(self):
+        for tenant, datasource in ((2, 3), (1, 4)):
+            snapshot = {"tenantId": tenant, "datasourceId": datasource, "datasourceName": "test",
+                        "datasourceType": "pg", "complete": True, "tableIds": [], "tables": []}
+            with self.subTest(tenant=tenant, datasource=datasource), \
+                 patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
+                 patch.object(api, "platform_get", AsyncMock(return_value=snapshot)), \
+                 patch.object(api, "get_platform_index") as index:
+                response = await self.client.post("/platform/table-embeddings/sync", json={"datasourceId":3},
+                    headers={"Authorization":"Bearer test", "tenant-id":"2"})
+                self.assertEqual(response.status_code, 403)
+                index.assert_not_called()
+
+    async def test_submission_uses_token_tenant_without_tenant_header(self):
+        snapshot = {"tenantId": 1, "datasourceId": 3, "datasourceName": "test",
+                    "datasourceType": "pg", "complete": True, "tableIds": [], "tables": [], "failures": []}
+        with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
+             patch.object(api, "platform_get", AsyncMock(return_value=snapshot)) as upstream, \
+             patch.object(api, "get_platform_index") as index:
+            index.return_value.submit.return_value = {"jobId": "own-job", "datasourceId": 3, "status": "pending"}
+            response = await self.client.post("/platform/table-embeddings/sync", json={"datasourceId":3},
+                headers={"Authorization":"Bearer test"})
+            self.assertEqual(response.status_code, 202)
+            upstream.assert_awaited_once_with(3, (self.identity, "test"), "embedding-metadata")
+            index.return_value.submit.assert_called_once_with(1, 7, snapshot, False)
 
     async def test_job_query_uses_tenant_and_rechecks_permission(self):
         with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
@@ -59,7 +113,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cross_tenant_job_is_not_found(self):
         with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
+             patch.object(api, "check_access", AsyncMock()) as access, \
              patch.object(api, "get_platform_index") as index:
             index.return_value.get.return_value = None
-            response = await self.client.get("/platform/table-embeddings/sync/other-tenant-job", headers={"Authorization":"Bearer test", "tenant-id":"1"})
+            response = await self.client.get("/platform/table-embeddings/sync/other-tenant-job", headers={"Authorization":"Bearer test", "tenant-id":"2"})
             self.assertEqual(response.status_code, 404)
+            index.return_value.get.assert_called_once_with(1, "other-tenant-job")
+            access.assert_not_awaited()

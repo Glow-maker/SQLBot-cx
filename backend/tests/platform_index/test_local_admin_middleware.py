@@ -29,6 +29,7 @@ class LocalAdminMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             self.enterContext(patch.object(auth.settings, name, value))
         self.resolver = self.enterContext(patch.object(
             auth, 'resolve_platform_token_identity', AsyncMock(return_value=None)))
+        self.enterContext(patch.object(auth.TokenMiddleware, '_resolve_platform_admin', AsyncMock(return_value=False)))
         self.enterContext(patch.object(auth, 'Session'))
         self.user_info = self.enterContext(patch.object(auth, 'get_user_info', AsyncMock(
             return_value={
@@ -76,21 +77,30 @@ class LocalAdminMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {'auth_source': 'local', 'tenant': 1, 'assistant': None})
 
-    async def test_verified_platform_identity_still_requires_matching_tenant(self):
-        self.resolver.return_value = auth.PlatformTokenIdentity(
-            user_id=7, account='operator', tenant_id=124, nickname='Operator', payload={})
-        for tenant in (None, '', '1', 'invalid'):
-            with self.subTest(tenant=tenant):
-                self.assertEqual((await self.request('platform-test-token', tenant)).status_code, 403)
+    async def test_verified_platform_token_controls_identity_and_data_certificate(self):
+        for verified_tenant in (124, 125):
+            self.resolver.return_value = auth.PlatformTokenIdentity(
+                user_id=7, account='operator', tenant_id=verified_tenant, nickname='Operator', payload={})
+            token = f'platform-test-token-{verified_tenant}'
+            for tenant in (None, '', '1', 'invalid', '124', '125'):
+                with self.subTest(verified_tenant=verified_tenant, tenant=tenant):
+                    response = await self.request(token, tenant)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()['auth_source'], 'platform')
+                    self.assertEqual(response.json()['tenant'], verified_tenant)
+                    certificate = response.json()['assistant']['certificate']
+                    self.assertIn({'target': 'header', 'key': 'Authorization',
+                                   'value': f'Bearer {token}'}, certificate)
+                    self.assertIn({'target': 'header', 'key': 'tenant-id',
+                                   'value': str(verified_tenant)}, certificate)
+        self.user_info.assert_not_awaited()
+
+    async def test_invalid_and_expired_platform_tokens_do_not_fall_back_to_local_admin(self):
+        for token in ('invalid-platform-token', 'expired-platform-token'):
+            with self.subTest(token=token):
+                response = await self.request(token)
+                self.assertEqual(response.status_code, 401)
         self.assertEqual(self.reached, [])
-        response = await self.request('platform-test-token', '124')
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()['auth_source'], 'platform')
-        self.assertEqual(response.json()['tenant'], 124)
-        certificate = response.json()['assistant']['certificate']
-        self.assertIn({'target': 'header', 'key': 'Authorization',
-                       'value': 'Bearer platform-test-token'}, certificate)
-        self.assertIn({'target': 'header', 'key': 'tenant-id', 'value': '124'}, certificate)
         self.user_info.assert_not_awaited()
 
     async def test_local_admin_exception_still_requires_enabled_whitelist(self):
