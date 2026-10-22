@@ -37,8 +37,9 @@ async function call(method: 'GET' | 'POST' | 'PUT', path: string, data?: unknown
       validateStatus: () => true,
     })
     if (identity()?.token !== state.token) throw new Error('登录状态已变化，请重新进入索引管理')
-    if (response.status === 200) {
-      const user = response.data
+    const identityCode = response.data?.code
+    if (response.status === 200 && (identityCode === undefined || identityCode === 0)) {
+      const user = identityCode === 0 ? response.data.data : response.data
       if (user?.auth_source !== 'platform' || user.id == null || !Number.isSafeInteger(user.oid) || user.oid < 0) {
         throw new Error('无法确认中台登录身份，请重新进入索引管理')
       }
@@ -50,7 +51,7 @@ async function call(method: 'GET' | 'POST' | 'PUT', path: string, data?: unknown
         headers: { Authorization: `Bearer ${state.token}`, 'tenant-id': String(user.oid) },
         validateStatus: () => true,
       })
-    } else if (response.status !== 401) {
+    } else if (![401, 403].includes(response.status) && ![401, 403].includes(identityCode)) {
       throw new Error('无法确认中台登录身份，请重新进入索引管理')
     }
     const code = response.data?.code ?? response.status

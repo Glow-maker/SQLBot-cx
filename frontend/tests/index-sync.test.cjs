@@ -22,7 +22,7 @@ function fixture(responses = [], identityResponses = []) {
     const token = config.headers?.get?.('X-SQLBOT-TOKEN') ?? config.headers?.['X-SQLBOT-TOKEN']
     const user = token === 'Bearer other' ? { id: 42, oid: 999 } : { id: 31, oid: 124 }
     const response = (isIdentity ? identityResponses.shift() : responses.shift()) || (
-      isIdentity ? { status: 200, data: { ...user, auth_source: 'platform' } }
+      isIdentity ? { status: 200, data: { code: 0, data: { ...user, auth_source: 'platform' }, msg: null } }
         : { status: 200, data: { code: 0, data: value } }
     )
     return typeof response === 'function' ? response(() => { state = {} }, s => { state = s }) : response
@@ -71,6 +71,47 @@ function fixture(responses = [], identityResponses = []) {
 }
 
 const urlPrefix = '/admin-api/dmgt/data-source/index-sync'
+
+test('unwraps the real SQLBot identity response before reading Data configuration', async () => {
+  const f = fixture([], [{ status: 200, data: {
+    code: 0, data: { id: 132, oid: 124, auth_source: 'platform' }, msg: null,
+  } }])
+  await f.api.getIndexSyncControl()
+  assert.equal(f.identityCalls().length, 1)
+  assert.equal(f.dataCalls().length, 1)
+  assert.equal(f.dataCalls()[0].headers['tenant-id'], '124')
+})
+
+test('keeps compatibility with unwrapped identity responses', async () => {
+  const f = fixture([], [{ status: 200, data: { id: 132, oid: 124, auth_source: 'platform' } }])
+  await f.api.getIndexSyncControl()
+  assert.equal(f.dataCalls().length, 1)
+})
+
+test('wrapped identity expiry renews once before a read reaches Data', async () => {
+  const f = fixture([], [{ status: 200, data: { code: 401, data: null, msg: 'expired' } }])
+  await f.api.getIndexSyncControl()
+  assert.equal(f.renewals(), 1)
+  assert.equal(f.identityCalls().length, 2)
+  assert.equal(f.dataCalls().length, 1)
+  assert.equal(f.dataCalls()[0].headers.Authorization, 'Bearer renewed')
+})
+
+test('wrapped identity failures never authorize Data from nested user fields', async () => {
+  for (const code of [403, 500]) {
+    const f = fixture([], [{ status: 200, data: {
+      code, data: { id: 132, oid: 124, auth_source: 'platform' }, msg: 'rejected',
+    } }])
+    await assert.rejects(f.api.syncAllIndexes(false), /身份|中台/)
+    assert.equal(f.dataCalls().length, 0)
+    assert.equal(f.renewals(), 0)
+  }
+  const local = fixture([], [{ status: 200, data: {
+    code: 0, data: { id: 132, oid: 124, auth_source: 'local' }, msg: null,
+  } }])
+  await assert.rejects(local.api.getIndexSyncControl(), /无法确认中台登录身份/)
+  assert.equal(local.dataCalls().length, 0)
+})
 
 test('verifies the current token before reading shared configuration without triggering sync', async () => {
   const f = fixture(); await f.api.getIndexSyncControl()
