@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     PLATFORM_DATASOURCE_BASE_URL: str | None = None
     PLATFORM_DATASOURCE_LIST_PATH: str = "/openapi/sqlbot/datasources/query"
     PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
+    # 索引同步提交时同步拉取整源结构快照，几千张表时较慢，单独放宽；须小于中台提交请求的 100 秒读超时
+    PLATFORM_INDEX_METADATA_TIMEOUT_SECONDS: float = 90.0
     # AssistantOutDs 远程拉取结果的本地 TTL 缓存秒数，避免打爆中台
     PLATFORM_DATASOURCE_CACHE_TTL_SECONDS: int = 60
     # 统一逻辑数据源：前端不选 ds，SQLBot 从中台全量表目录路由到单个真实 ds 执行

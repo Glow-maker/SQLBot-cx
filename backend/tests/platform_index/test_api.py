@@ -98,8 +98,39 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post("/platform/table-embeddings/sync", json={"datasourceId":3},
                 headers={"Authorization":"Bearer test"})
             self.assertEqual(response.status_code, 202)
-            upstream.assert_awaited_once_with(3, (self.identity, "test"), "embedding-metadata")
+            upstream.assert_awaited_once_with(3, (self.identity, "test"), "embedding-metadata",
+                                              api.settings.PLATFORM_INDEX_METADATA_TIMEOUT_SECONDS)
             index.return_value.submit.assert_called_once_with(1, 7, snapshot, False)
+
+    async def test_only_index_snapshot_fetch_uses_longer_timeout(self):
+        snapshot = {"tenantId": 1, "datasourceId": 3, "datasourceName": "test",
+                    "datasourceType": "pg", "complete": True, "tableIds": [], "tables": [], "failures": []}
+        timeouts = {}
+        client_class = httpx.AsyncClient
+
+        def remote(**kwargs):
+            def handle(request):
+                operation = request.url.path.rsplit("/", 1)[-1]
+                timeouts[operation] = kwargs["timeout"]
+                data = snapshot if operation == "embedding-metadata" else {"tenantId": 1, "datasourceId": 3}
+                return httpx.Response(200, json={"code": 0, "data": data})
+            return client_class(transport=httpx.MockTransport(handle))
+
+        with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \
+             patch.object(api.settings, "PLATFORM_DATASOURCE_ENABLED", True), \
+             patch.object(api.settings, "PLATFORM_DATASOURCE_BASE_URL", "http://data.test"), \
+             patch.object(api.settings, "PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS", 10.0), \
+             patch.object(api.settings, "PLATFORM_INDEX_METADATA_TIMEOUT_SECONDS", 90.0), \
+             patch.object(api.httpx, "AsyncClient", side_effect=remote), \
+             patch.object(api, "get_platform_index") as index:
+            index.return_value.submit.return_value = {"jobId": "job", "datasourceId": 3, "status": "pending"}
+            index.return_value.get.return_value = None
+            headers = {"Authorization": "Bearer test"}
+            self.assertEqual((await self.client.post("/platform/table-embeddings/sync", json={"datasourceId": 3},
+                                                     headers=headers)).status_code, 202)
+            self.assertEqual((await self.client.get("/platform/table-embeddings/sync?datasourceId=3",
+                                                    headers=headers)).status_code, 200)
+        self.assertEqual(timeouts, {"embedding-metadata": 90.0, "embedding-access": 10.0})
 
     async def test_job_query_uses_tenant_and_rechecks_permission(self):
         with patch.object(api, "resolve_platform_token_identity", AsyncMock(return_value=self.identity)), \

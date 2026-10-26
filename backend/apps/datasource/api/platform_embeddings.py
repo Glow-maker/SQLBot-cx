@@ -31,13 +31,13 @@ async def platform_identity(request: Request):
     return identity, token
 
 
-async def platform_get(datasource_id, auth, operation):
+async def platform_get(datasource_id, auth, operation, timeout=None):
     identity, token = auth
     base = settings.PLATFORM_DATASOURCE_BASE_URL
     if not settings.PLATFORM_DATASOURCE_ENABLED or not base:
         raise HTTPException(503, "中台数据源服务未配置")
     try:
-        async with httpx.AsyncClient(timeout=settings.PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=timeout or settings.PLATFORM_DATASOURCE_HTTP_TIMEOUT_SECONDS) as client:
             response = await client.get(f"{base.rstrip('/')}/openapi/sqlbot/datasources/{datasource_id}/{operation}",
                 headers={"Authorization": f"Bearer {token}", settings.PLATFORM_AUTH_TENANT_ID_HEADER: str(identity.tenant_id)})
         if response.status_code in (401, 403):
@@ -63,7 +63,8 @@ async def check_access(datasource_id, auth):
 
 @router.post("/sync", status_code=202)
 async def sync(body: SyncRequest, auth=Depends(platform_identity)):
-    data = await platform_get(body.datasourceId, auth, "embedding-metadata")
+    data = await platform_get(body.datasourceId, auth, "embedding-metadata",
+                              settings.PLATFORM_INDEX_METADATA_TIMEOUT_SECONDS)
     try:
         snapshot = MetadataSnapshot.model_validate(data)
     except ValidationError:
