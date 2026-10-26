@@ -316,6 +316,30 @@ def get_chat_with_records_with_data(session: SessionDep, chart_id: int, current_
 dynamic_ds_types = [1, 3]
 
 
+def denied_records(session: SessionDep, current_user: CurrentUser, current_assistant, records) -> dict:
+    """Recheck each record's SQL with one catalog read; returns {record_id: message} for records to withhold."""
+    from fastapi import HTTPException
+    from apps.chat.task.record_access import require_record_access
+    from apps.system.crud.assistant import AssistantOutDsFactory
+    catalog = None
+    # Records without SQL (and derived ones, whose base record has SQL) never need the catalog otherwise.
+    if current_assistant and any(record.sql for record in records):
+        try:
+            catalog = AssistantOutDsFactory.get_instance(current_assistant)
+        except Exception:
+            raise HTTPException(503, "问数目录暂不可用，请稍后重试") from None
+    denied = {}
+    for record in records:
+        try:
+            require_record_access(session, current_user, record.id, check_candidates=False,
+                                  current_assistant=current_assistant, catalog=catalog)
+        except HTTPException as e:
+            if e.status_code in (401, 503):
+                raise
+            denied[record.id] = e.detail
+    return denied
+
+
 def get_chat_with_records(session: SessionDep, chart_id: int, current_user: CurrentUser,
                           current_assistant: CurrentAssistant, with_data: bool = False,
                           trans: Trans = None) -> ChatInfo:
@@ -324,10 +348,10 @@ def get_chat_with_records(session: SessionDep, chart_id: int, current_user: Curr
         raise Exception(f"Chat with id {chart_id} not found")
     if chat.create_by != current_user.id or chat.oid != current_user.oid:
         raise Exception(f"Chat with id {chart_id} not Owned by the current user")
+    denied = {}
     if settings.PLATFORM_DATASOURCE_ENABLED:
-        from apps.chat.task.record_access import require_record_access
-        for record in session.query(ChatRecord).filter(ChatRecord.chat_id == chart_id).all():
-            require_record_access(session, current_user, record.id, check_candidates=False)
+        records = session.query(ChatRecord).filter(ChatRecord.chat_id == chart_id).all()
+        denied = denied_records(session, current_user, current_assistant, records)
     chat_info = ChatInfo(**chat.model_dump())
 
     logical_ds_chat = (
@@ -449,7 +473,15 @@ def get_chat_with_records(session: SessionDep, chart_id: int, current_user: Curr
         # 获取token总消耗
         total_tokens = token_usage_map.get(row.id, 0)
 
-        if not with_data:
+        if row.id in denied:
+            # Only this record is withheld; the rest of the chat still opens.
+            record_list.append(
+                ChatRecordResult(id=row.id, chat_id=row.chat_id, create_time=row.create_time,
+                                 finish_time=row.finish_time, duration=duration, total_tokens=total_tokens,
+                                 question=row.question, first_chat=row.first_chat, finish=row.finish,
+                                 analysis_record_id=row.analysis_record_id, predict_record_id=row.predict_record_id,
+                                 error=denied[row.id]))
+        elif not with_data:
             record_list.append(
                 ChatRecordResult(id=row.id, chat_id=row.chat_id, create_time=row.create_time,
                                  finish_time=row.finish_time,
@@ -586,8 +618,10 @@ def get_chat_log_history(session: SessionDep, chat_record_id: int, current_user:
     """
     # 1. 首先验证ChatRecord存在且属于当前用户
     chat_record = session.get(ChatRecord, chat_record_id)
-    from apps.chat.task.record_access import require_record_access
-    require_record_access(session, current_user, chat_record_id)
+    if not without_steps:
+        # Steps include the stored routing prompt; usage totals only need the ownership checks below.
+        from apps.chat.task.record_access import require_record_access
+        require_record_access(session, current_user, chat_record_id)
     if not chat_record:
         raise Exception(f"ChatRecord with id {chat_record_id} not found")
 

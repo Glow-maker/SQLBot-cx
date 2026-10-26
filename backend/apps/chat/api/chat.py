@@ -27,6 +27,11 @@ from common.utils.data_format import DataFormat
 from common.audit.models.log_model import OperationType, OperationModules
 from common.audit.schemas.logger_decorator import LogConfig, system_log
 
+def _error_text(e: Exception) -> str:
+    # str(HTTPException) is "403: detail"; users should only see the detail.
+    return str(e.detail) if isinstance(e, HTTPException) else str(e)
+
+
 router = APIRouter(tags=["Data Q&A"], prefix="/chat")
 
 
@@ -239,7 +244,7 @@ async def ask_recommend_questions(session: SessionDep, current_user: CurrentUser
     capture = None
     try:
         from apps.chat.task.record_access import require_record_access
-        record = require_record_access(session, current_user, chat_record_id)
+        record = require_record_access(session, current_user, chat_record_id, check_candidates=False)
 
         if not record:
             return StreamingResponse(_return_empty(), media_type="text/event-stream")
@@ -264,7 +269,7 @@ async def ask_recommend_questions(session: SessionDep, current_user: CurrentUser
         traceback.print_exc()
 
         def _err(_e: Exception):
-            yield 'data:' + orjson.dumps({'content': str(_e), 'type': 'error'}).decode() + '\n\n'
+            yield 'data:' + orjson.dumps({'content': _error_text(_e), 'type': 'error'}).decode() + '\n\n'
 
         return StreamingResponse(_err(e), media_type="text/event-stream")
 
@@ -351,8 +356,10 @@ async def question_answer_inner(session: SessionDep, current_user: CurrentUser, 
                 rec_regenerate_record_id = rec_id
 
             # 针对已经是重新生成的提问，需要找到原来的提问是什么
-            from apps.chat.task.record_access import require_record_access
-            require_record_access(session, current_user, rec_regenerate_record_id)
+            # Ownership only: a regenerated question goes through the live gates, and analysis/predict
+            # recheck the record themselves.
+            from apps.chat.task.record_access import require_record_owner
+            require_record_owner(session, current_user, rec_regenerate_record_id)
             base_question_text = find_base_question(rec_regenerate_record_id, session)
             text_before_command = text_before_command + ("\n" if text_before_command else "") + base_question_text
 
@@ -380,10 +387,10 @@ async def question_answer_inner(session: SessionDep, current_user: CurrentUser, 
         if stream:
             def _err(_e: Exception):
                 if in_chat:
-                    yield 'data:' + orjson.dumps({'content': str(_e), 'type': 'error'}).decode() + '\n\n'
+                    yield 'data:' + orjson.dumps({'content': _error_text(_e), 'type': 'error'}).decode() + '\n\n'
                 else:
                     yield f'&#x274c; **ERROR:**\n'
-                    yield f'> {str(_e)}\n'
+                    yield f'> {_error_text(_e)}\n'
 
             return StreamingResponse(_err(e), media_type="text/event-stream")
         else:
@@ -415,7 +422,7 @@ async def stream_sql(session: SessionDep, current_user: CurrentUser, request_que
 
         if stream:
             def _err(_e: Exception):
-                yield 'data:' + orjson.dumps({'content': str(_e), 'type': 'error'}).decode() + '\n\n'
+                yield 'data:' + orjson.dumps({'content': _error_text(_e), 'type': 'error'}).decode() + '\n\n'
 
             return StreamingResponse(_interaction_events(capture, _err(e)), media_type="text/event-stream")
         else:
@@ -454,7 +461,7 @@ async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, ch
     capture = None
     try:
         from apps.chat.task.record_access import require_record_access
-        require_record_access(session, current_user, chat_record_id)
+        require_record_access(session, current_user, chat_record_id, check_candidates=False)
         if action_type != 'analysis' and action_type != 'predict':
             raise Exception(f"Type {action_type} Not Found")
         record: ChatRecord | None = None
@@ -492,10 +499,10 @@ async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, ch
         if stream:
             def _err(_e: Exception):
                 if in_chat:
-                    yield 'data:' + orjson.dumps({'content': str(_e), 'type': 'error'}).decode() + '\n\n'
+                    yield 'data:' + orjson.dumps({'content': _error_text(_e), 'type': 'error'}).decode() + '\n\n'
                 else:
                     yield f'&#x274c; **ERROR:**\n'
-                    yield f'> {str(_e)}\n'
+                    yield f'> {_error_text(_e)}\n'
 
             return StreamingResponse(_interaction_events(capture, _err(e)), media_type="text/event-stream")
         else:

@@ -73,6 +73,134 @@ class QueryGuardTests(unittest.TestCase):
                     candidates.assert_not_called()
                     service._do_permission_check.assert_called_once()
 
+    def _stored_check(self, check, entries=(), select_answer=None, catalog=None, catalog_error=None):
+        record = SimpleNamespace(id=10, create_by=1, chat_id=5, datasource=2, sql='SELECT * FROM orders',
+                                 datasource_select_answer=select_answer)
+        session = MagicMock()
+        session.get.side_effect = [record, SimpleNamespace(create_by=1, oid=124)]
+        service = MagicMock()
+        if catalog_error:
+            service._ensure_out_ds_instance.side_effect = catalog_error
+        service._ensure_out_ds_instance.return_value = SimpleNamespace(ds_list=[SimpleNamespace(id=2)])
+        service._logical_table_entries.return_value = list(entries)
+        service._do_permission_check.return_value = check
+        with patch('apps.chat.task.record_access.settings.PLATFORM_DATASOURCE_ENABLED', True), \
+             patch('apps.chat.task.record_access.RequestContext.get_request', return_value=SimpleNamespace(state=SimpleNamespace(assistant=object()))), \
+             patch('apps.chat.task.llm.LLMService.__new__', return_value=service), \
+             patch('apps.system.crud.assistant.AssistantOutDs._physical_datasource_key', return_value='source:second'):
+            try:
+                return require_record_access(session, SimpleNamespace(id=1, oid=124), 10,
+                                             check_candidates=False, catalog=catalog), service
+            except HTTPException as e:
+                return e, service
+
+    def test_stored_recheck_uses_the_records_own_route_without_restoring_revoked_tables(self):
+        import json
+        route = json.dumps({'content': '选表结果：' + json.dumps({'success': True, 'tables': [
+            {'datasourceId': 2, 'tableId': 7, 'name': 'orders'}, {'datasourceId': 2, 'tableId': 9, 'name': 'revoked'}]})})
+        orders = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods')
+        other = dict(datasourceId=2, tableId=8, name='orders', schemaName='public')
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders, other], route)
+        self.assertEqual(result.id, 10)
+        self.assertEqual(service.logical_route_tables, [orders])
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders], 'not json')
+        self.assertEqual(service.logical_route_tables, [])
+        aliased = json.dumps({'content': json.dumps({'success': True, 'tables': [{'datasource_id': 2, 'id': 7, 'name': 'orders'}]})})
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders, other], aliased)
+        self.assertEqual(service.logical_route_tables, [orders])
+
+    def test_stored_recheck_separates_service_failures_from_revocation(self):
+        for reason, status in (('permission_service_timeout', 503), ('permission_service_status_401', 401),
+                               ('user_lacks_table_permission', 403), ('table_not_registered_or_ambiguous', 403)):
+            result, _ = self._stored_check(SimpleNamespace(allowed=False, reason=reason))
+            self.assertIsInstance(result, HTTPException, reason)
+            self.assertEqual(result.status_code, status, reason)
+        result, _ = self._stored_check(None)
+        self.assertEqual(result.status_code, 403)
+
+    def test_catalog_failure_is_temporary_and_a_loaded_catalog_is_reused(self):
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), catalog_error=RuntimeError('Read timed out'))
+        self.assertEqual(result.status_code, 503)
+        catalog = SimpleNamespace(ds_list=[SimpleNamespace(id=2)])
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), catalog=catalog)
+        self.assertEqual(result.id, 10)
+        self.assertIs(service.out_ds_instance, catalog)
+
+    def test_usage_totals_skip_the_recheck_but_steps_keep_it(self):
+        from apps.chat.curd.chat import get_chat_log_history
+        for without_steps in (True, False):
+            session = MagicMock()
+            session.get.return_value = SimpleNamespace(id=10, create_by=1)
+            with patch('apps.chat.task.record_access.require_record_access') as access:
+                try:
+                    get_chat_log_history(session, 10, SimpleNamespace(id=1, oid=124), without_steps)
+                except Exception:
+                    pass  # later formatting does not matter here
+            self.assertEqual(access.called, not without_steps)
+            if not without_steps:
+                self.assertNotIn('check_candidates', access.call_args.kwargs)
+
+    def test_opening_a_chat_withholds_only_the_denied_record(self):
+        from apps.chat.curd.chat import denied_records
+        catalog = object()
+
+        def check(session, user, record_id, **kwargs):
+            self.assertIs(kwargs['catalog'], catalog)
+            self.assertIs(kwargs['check_candidates'], False)
+            if record_id == 2:
+                raise HTTPException(403, '数据授权已变化，请使用当前可查询表重新提问')
+
+        records = [SimpleNamespace(id=1, sql='SELECT 1'), SimpleNamespace(id=2, sql='SELECT 2'), SimpleNamespace(id=3, sql=None)]
+        with patch('apps.chat.task.record_access.require_record_access', side_effect=check), \
+             patch('apps.system.crud.assistant.AssistantOutDsFactory.get_instance', return_value=catalog) as load:
+            self.assertEqual(denied_records(MagicMock(), SimpleNamespace(id=1), object(), records),
+                             {2: '数据授权已变化，请使用当前可查询表重新提问'})
+            load.assert_called_once()
+        with patch('apps.chat.task.record_access.require_record_access') as access, \
+             patch('apps.system.crud.assistant.AssistantOutDsFactory.get_instance') as load:
+            self.assertEqual(denied_records(MagicMock(), SimpleNamespace(id=1), object(), [SimpleNamespace(id=3, sql=None)]), {})
+            load.assert_not_called()  # nothing to recheck against the catalog
+            self.assertIsNone(access.call_args.kwargs['catalog'])
+        for status in (401, 503):
+            with patch('apps.chat.task.record_access.require_record_access', side_effect=HTTPException(status, 'temporary')), \
+                 patch('apps.system.crud.assistant.AssistantOutDsFactory.get_instance', return_value=catalog):
+                with self.assertRaises(HTTPException):
+                    denied_records(MagicMock(), SimpleNamespace(id=1), object(), [SimpleNamespace(id=1, sql='SELECT 1')])
+
+    def test_analysis_and_predict_records_follow_their_base_record(self):
+        import apps.chat.task.record_access as access_module
+        user = SimpleNamespace(id=1, oid=124)
+        objects = {('Chat', 5): SimpleNamespace(create_by=1, oid=124),
+                   ('ChatRecord', 1): SimpleNamespace(id=1, create_by=1, chat_id=5, sql='SELECT * FROM orders'),
+                   ('ChatRecord', 2): SimpleNamespace(id=2, create_by=1, chat_id=5, sql=None, analysis_record_id=1, predict_record_id=None),
+                   ('ChatRecord', 3): SimpleNamespace(id=3, create_by=1, chat_id=5, sql=None, analysis_record_id=None, predict_record_id=None)}
+        session = MagicMock()
+        session.get.side_effect = lambda model, key: objects.get((model.__name__, key))
+        with patch('apps.chat.task.record_access.settings.PLATFORM_DATASOURCE_ENABLED', True):
+            with patch.object(access_module, 'require_record_access', side_effect=HTTPException(403, 'revoked')) as base:
+                with self.assertRaises(HTTPException):
+                    require_record_access(session, user, 2, check_candidates=False)
+                self.assertEqual(base.call_args.args[2], 1)
+                self.assertIs(base.call_args.kwargs['check_candidates'], False)
+            with patch.object(access_module, 'require_record_access') as base:
+                self.assertIs(require_record_access(session, user, 2, check_candidates=False), objects[('ChatRecord', 2)])
+                self.assertIs(require_record_access(session, user, 3, check_candidates=False), objects[('ChatRecord', 3)])
+                self.assertEqual(base.call_count, 1)  # only the analysis record follows a base record
+
+    def test_api_record_paths_recheck_sql_without_candidate_drift(self):
+        import ast, inspect
+        import apps.chat.api.chat as api
+        calls = [node for node in ast.walk(ast.parse(inspect.getsource(api)))
+                 if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'require_record_access']
+        self.assertEqual(len(calls), 3)  # recommend, analysis/predict, export
+        for call in calls:
+            flags = {k.arg: getattr(k.value, 'value', None) for k in call.keywords}
+            self.assertIs(flags.get('check_candidates'), False)
+        owners = [node for node in ast.walk(ast.parse(inspect.getsource(api)))
+                  if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'require_record_owner']
+        self.assertEqual(len(owners), 1)  # regenerate: the new SQL goes through the live gates
+        self.assertEqual(api._error_text(HTTPException(403, '数据授权已变化')), '数据授权已变化')
+
     def test_stored_chart_and_predict_data_skip_candidate_check(self):
         from apps.chat.curd.chat import get_chart_data_with_user, get_chat_predict_data_with_user
         for read in (get_chart_data_with_user, get_chat_predict_data_with_user):
