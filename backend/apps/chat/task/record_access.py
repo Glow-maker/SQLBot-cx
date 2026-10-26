@@ -19,19 +19,22 @@ def require_current_candidates(messages, entries):
                 if not entry or any(card.get(k) != entry.get(k) for k in ('schemaName', 'name')):
                     raise ValueError('candidate revoked')
                 fields = {f['name'] for f in entry.get('fields') or []}
-                if any(f['name'] not in fields for f in card.get('fields') or []):
+                # Empty structure means Data could not read an unregistered table this time, not a removed field.
+                if fields and any(f['name'] not in fields for f in card.get('fields') or []):
                     raise ValueError('field removed')
         except (KeyError, TypeError, ValueError):
             raise HTTPException(403, '历史目录授权已变化，请使用当前可查询表重新提问') from None
 
 
-def require_record_access(session, user, record_id, *, current_assistant=None):
+def require_record_access(session, user, record_id, *, current_assistant=None, check_candidates=True):
+    """check_candidates=False when only stored results are shown: the record's SQL is still rechecked,
+    but routing candidates matter only when the stored prompt is sent to the model again."""
     record = session.get(ChatRecord, record_id)
     chat = session.get(Chat, record.chat_id) if record else None
     if not record or not chat or record.create_by != user.id or chat.create_by != user.id or chat.oid != user.oid:
         raise HTTPException(403, "无权访问此记录")
     route_logs = []
-    if settings.PLATFORM_DATASOURCE_ENABLED:
+    if settings.PLATFORM_DATASOURCE_ENABLED and check_candidates:
         route_logs = session.query(ChatLog).filter(ChatLog.pid == record_id,
             ChatLog.operate == OperationEnum.CHOOSE_DATASOURCE).all()
     if settings.PLATFORM_DATASOURCE_ENABLED and (record.sql or route_logs):

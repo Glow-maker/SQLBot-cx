@@ -12,11 +12,12 @@ class StoredExportTests(unittest.IsolatedAsyncioTestCase):
     async def test_revoked_export_never_reads_stored_data(self):
         import inspect
         from apps.chat.api.chat import export_excel
-        with patch('apps.chat.task.record_access.require_record_access', side_effect=HTTPException(403, 'revoked')), \
+        with patch('apps.chat.task.record_access.require_record_access', side_effect=HTTPException(403, 'revoked')) as access, \
              patch('apps.chat.api.chat.get_chat_chart_data') as read:
             with self.assertRaises(HTTPException):
                 await inspect.unwrap(export_excel)(MagicMock(), SimpleNamespace(id=1, oid=124), 10, 5, lambda x: x)
             read.assert_not_called()
+            self.assertIs(access.call_args.kwargs.get('check_candidates'), False)
 
 
 class QueryGuardTests(unittest.TestCase):
@@ -43,9 +44,43 @@ class QueryGuardTests(unittest.TestCase):
         entry = dict(datasourceId=1, tableId=12, schemaName='public', name='orders', fields=[dict(name='amount')])
         messages = [dict(type='human', content=json.dumps(dict(tables=[entry])))]
         require_current_candidates(messages, [entry])
-        for current in ([], [dict(entry, tableId=22)], [dict(entry, fields=[])]):
+        for current in ([], [dict(entry, tableId=22)], [dict(entry, name='renamed')],
+                        [dict(entry, fields=[dict(name='other')])]):
             with self.assertRaises(HTTPException):
                 require_current_candidates(messages, current)
+        # Data returns no structure when it cannot read an unregistered table; the table is still granted.
+        require_current_candidates(messages, [dict(entry, fields=[])])
+
+    def test_viewing_results_rechecks_sql_but_not_routing_candidates(self):
+        record = SimpleNamespace(id=10, create_by=1, chat_id=5, datasource=2, sql='SELECT * FROM orders')
+        ds = SimpleNamespace(id=2, physicalDatasourceKey='source:second')
+        for check_candidates in (False, True):
+            session = MagicMock()
+            session.get.side_effect = [record, SimpleNamespace(create_by=1, oid=124)]
+            session.query.return_value.filter.return_value.all.return_value = [SimpleNamespace(messages=[])]
+            service = MagicMock()
+            service._ensure_out_ds_instance.return_value = SimpleNamespace(ds_list=[ds])
+            service._do_permission_check.return_value = SimpleNamespace(allowed=True)
+            with patch('apps.chat.task.record_access.settings.PLATFORM_DATASOURCE_ENABLED', True), \
+                 patch('apps.chat.task.record_access.RequestContext.get_request', return_value=SimpleNamespace(state=SimpleNamespace(assistant=object()))), \
+                 patch('apps.chat.task.llm.LLMService.__new__', return_value=service), \
+                 patch('apps.chat.task.record_access.require_current_candidates', side_effect=HTTPException(403, 'changed')) as candidates:
+                if check_candidates:
+                    with self.assertRaises(HTTPException):
+                        require_record_access(session, SimpleNamespace(id=1, oid=124), 10)
+                else:
+                    self.assertIs(require_record_access(session, SimpleNamespace(id=1, oid=124), 10, check_candidates=False), record)
+                    candidates.assert_not_called()
+                    service._do_permission_check.assert_called_once()
+
+    def test_stored_chart_and_predict_data_skip_candidate_check(self):
+        from apps.chat.curd.chat import get_chart_data_with_user, get_chat_predict_data_with_user
+        for read in (get_chart_data_with_user, get_chat_predict_data_with_user):
+            session = MagicMock()
+            session.execute.return_value = []
+            with patch('apps.chat.task.record_access.require_record_access') as access:
+                self.assertEqual(read(session, SimpleNamespace(id=1, oid=124), 10), {})
+            self.assertIs(access.call_args.kwargs.get('check_candidates'), False)
 
     def test_cte_alias_cannot_hide_qualified_physical_table(self):
         from common.utils.sql_parser import extract_table_refs

@@ -230,7 +230,7 @@ def get_chat_chart_config(session: SessionDep, chat_record_id: int):
 
 def get_chart_data_with_user(session: SessionDep, current_user: CurrentUser, chat_record_id: int):
     from apps.chat.task.record_access import require_record_access
-    require_record_access(session, current_user, chat_record_id)
+    require_record_access(session, current_user, chat_record_id, check_candidates=False)
     stmt = select(ChatRecord.data).where(and_(ChatRecord.id == chat_record_id, ChatRecord.create_by == current_user.id))
     res = session.execute(stmt)
     for row in res:
@@ -285,7 +285,7 @@ def get_chat_chart_data(session: SessionDep, chat_record_id: int):
 
 def get_chat_predict_data_with_user(session: SessionDep, current_user: CurrentUser, chat_record_id: int):
     from apps.chat.task.record_access import require_record_access
-    require_record_access(session, current_user, chat_record_id)
+    require_record_access(session, current_user, chat_record_id, check_candidates=False)
     stmt = select(ChatRecord.predict_data).where(
         and_(ChatRecord.id == chat_record_id, ChatRecord.create_by == current_user.id))
     res = session.execute(stmt)
@@ -327,7 +327,7 @@ def get_chat_with_records(session: SessionDep, chart_id: int, current_user: Curr
     if settings.PLATFORM_DATASOURCE_ENABLED:
         from apps.chat.task.record_access import require_record_access
         for record in session.query(ChatRecord).filter(ChatRecord.chat_id == chart_id).all():
-            require_record_access(session, current_user, record.id)
+            require_record_access(session, current_user, record.id, check_candidates=False)
     chat_info = ChatInfo(**chat.model_dump())
 
     logical_ds_chat = (

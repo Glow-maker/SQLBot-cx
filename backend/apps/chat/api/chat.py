@@ -525,7 +525,7 @@ async def analysis_or_predict(session: SessionDep, current_user: CurrentUser, ch
 @system_log(LogConfig(operation_type=OperationType.EXPORT, module=OperationModules.CHAT, resource_id_expr="chat_id", ))
 async def export_excel(session: SessionDep, current_user: CurrentUser, chat_record_id: int, chat_id: int, trans: Trans):
     from apps.chat.task.record_access import require_record_access
-    chat_record = require_record_access(session, current_user, chat_record_id)
+    chat_record = require_record_access(session, current_user, chat_record_id, check_candidates=False)
     if chat_record.chat_id != chat_id:
         raise HTTPException(403, '记录不属于此会话')
     if not chat_record:
