@@ -73,11 +73,13 @@ class QueryGuardTests(unittest.TestCase):
                     candidates.assert_not_called()
                     service._do_permission_check.assert_called_once()
 
-    def _stored_check(self, check, entries=(), select_answer=None, catalog=None, catalog_error=None):
+    def _stored_check(self, check, entries=(), select_answer=None, catalog=None, catalog_error=None, route_messages=None):
         record = SimpleNamespace(id=10, create_by=1, chat_id=5, datasource=2, sql='SELECT * FROM orders',
                                  datasource_select_answer=select_answer)
         session = MagicMock()
         session.get.side_effect = [record, SimpleNamespace(create_by=1, oid=124)]
+        session.query.return_value.filter.return_value.all.return_value = (
+            [SimpleNamespace(messages=route_messages)] if route_messages is not None else [])
         service = MagicMock()
         if catalog_error:
             service._ensure_out_ds_instance.side_effect = catalog_error
@@ -94,12 +96,16 @@ class QueryGuardTests(unittest.TestCase):
             except HTTPException as e:
                 return e, service
 
-    def test_stored_recheck_uses_the_records_own_route_without_restoring_revoked_tables(self):
+    @staticmethod
+    def _route(*tables):
         import json
-        route = json.dumps({'content': '选表结果：' + json.dumps({'success': True, 'tables': [
-            {'datasourceId': 2, 'tableId': 7, 'name': 'orders'}, {'datasourceId': 2, 'tableId': 9, 'name': 'revoked'}]})})
+        return json.dumps({'content': '选表结果：' + json.dumps({'success': True, 'tables': list(tables)})})
+
+    def test_stored_recheck_uses_the_records_own_route(self):
+        import json
         orders = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods')
         other = dict(datasourceId=2, tableId=8, name='orders', schemaName='public')
+        route = self._route({'datasourceId': 2, 'tableId': 7, 'name': 'orders'})
         result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders, other], route)
         self.assertEqual(result.id, 10)
         self.assertEqual(service.logical_route_tables, [orders])
@@ -108,6 +114,40 @@ class QueryGuardTests(unittest.TestCase):
         aliased = json.dumps({'content': json.dumps({'success': True, 'tables': [{'datasource_id': 2, 'id': 7, 'name': 'orders'}]})})
         result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders, other], aliased)
         self.assertEqual(service.logical_route_tables, [orders])
+
+    def test_revoked_routed_table_cannot_resolve_to_a_same_named_granted_table(self):
+        # Routed to ods.orders; the stored SQL says only "orders". After ods.orders is revoked,
+        # public.orders (still granted) must not let the old ods rows through.
+        public = dict(datasourceId=2, tableId=8, name='orders', schemaName='public')
+        route = self._route({'datasourceId': 2, 'tableId': 7, 'name': 'orders'})
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [public], route)
+        self.assertIsInstance(result, HTTPException)
+        self.assertEqual(result.status_code, 403)
+        service._do_permission_check.assert_not_called()
+        # One of several routed tables gone: the result is withheld too.
+        orders = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods')
+        both = self._route({'datasourceId': 2, 'tableId': 7}, {'datasourceId': 2, 'tableId': 9, 'name': 'revoked'})
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders, public], both)
+        self.assertEqual(result.status_code, 403)
+
+    def test_routed_table_must_keep_its_schema_and_name(self):
+        import json
+        orders = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods', fields=[dict(name='amount')])
+        route = self._route({'datasourceId': 2, 'tableId': 7})
+        card = dict(orders)
+        messages = [dict(type='human', content=json.dumps(dict(tables=[card, dict(datasourceId=2, tableId=30, name='gone')])))]
+        # Other candidates and fields may drift; only the routed table's identity matters.
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, fields=[])], route, route_messages=messages)
+        self.assertEqual(result.id, 10)
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, name='ORDERS', schemaName='ODS')], route, route_messages=messages)
+        self.assertEqual(result.id, 10)  # case only, same identity as the SQL resolver
+        for changed in (dict(orders, schemaName='public'), dict(orders, name='orders_v2')):
+            result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [changed], route, route_messages=messages)
+            self.assertEqual(result.status_code, 403, changed)
+            service._do_permission_check.assert_not_called()
+        # Unreadable route log: still requires the routed table to exist.
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders], route, route_messages=[dict(type='human', content='x')])
+        self.assertEqual(result.id, 10)
 
     def test_stored_recheck_separates_service_failures_from_revocation(self):
         for reason, status in (('permission_service_timeout', 503), ('permission_service_status_401', 401),

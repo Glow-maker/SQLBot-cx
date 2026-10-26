@@ -27,17 +27,43 @@ def require_current_candidates(messages, entries):
             raise HTTPException(403, '历史目录授权已变化，请使用当前可查询表重新提问') from None
 
 
-def routed_entries(record, entries):
-    """Current catalog entries the record was routed to; tables no longer in the catalog stay out."""
+def routed_keys(record):
+    """(datasourceId, tableId) of the tables the record was routed to, from its stored route answer."""
     try:
         content = json.loads(record.datasource_select_answer or '{}').get('content') or ''
         tables = json.loads(extract_nested_json(content) or '{}').get('tables') or []
     except (TypeError, ValueError, AttributeError):
-        return []
+        return set()
     # Same keys the live router accepts (llm.py route_logical_datasource).
-    routed = {(str(t.get('datasourceId') or t.get('datasource_id')), str(t.get('tableId') or t.get('id')))
-              for t in tables if isinstance(t, dict)}
+    return {(str(t.get('datasourceId') or t.get('datasource_id')), str(t.get('tableId') or t.get('id')))
+            for t in tables if isinstance(t, dict)}
+
+
+def routed_entries(record, entries):
+    """Current catalog entries the record was routed to; tables no longer in the catalog stay out."""
+    routed = routed_keys(record)
     return [e for e in entries if (str(e.get('datasourceId')), str(e.get('tableId'))) in routed]
+
+
+def require_routed_tables(record, route_messages, entries):
+    """The tables a stored result was routed to must still be in the catalog under the same schema and name.
+    Otherwise an unqualified name in the stored SQL could resolve to another granted table and pass Data."""
+    current = {(str(e.get('datasourceId')), str(e.get('tableId'))): e for e in entries}
+    cards = {}
+    for messages in route_messages:
+        for message in messages or []:
+            if message.get('type') != 'human':
+                continue
+            try:
+                for card in json.loads(message['content'])['tables']:
+                    cards[(str(card['datasourceId']), str(card['tableId']))] = card
+            except (KeyError, TypeError, ValueError):
+                continue  # no comparable card; existence is still checked below
+    for key in routed_keys(record):
+        entry, card = current.get(key), cards.get(key)
+        if not entry or (card and any(str(card.get(k) or '').lower() != str(entry.get(k) or '').lower()
+                                      for k in ('schemaName', 'name'))):
+            raise HTTPException(403, '数据授权已变化，请使用当前可查询表重新提问')
 
 
 def require_record_owner(session, user, record_id):
@@ -59,7 +85,7 @@ def require_record_access(session, user, record_id, *, current_assistant=None, c
         require_record_access(session, user, base_id, current_assistant=current_assistant,
                               check_candidates=False, catalog=catalog)
     route_logs = []
-    if settings.PLATFORM_DATASOURCE_ENABLED and check_candidates:
+    if settings.PLATFORM_DATASOURCE_ENABLED and (check_candidates or record.sql):
         route_logs = session.query(ChatLog).filter(ChatLog.pid == record_id,
             ChatLog.operate == OperationEnum.CHOOSE_DATASOURCE).all()
     if settings.PLATFORM_DATASOURCE_ENABLED and (record.sql or route_logs):
@@ -83,17 +109,20 @@ def require_record_access(session, user, record_id, *, current_assistant=None, c
             raise
         except Exception:
             raise HTTPException(503, "问数目录暂不可用，请稍后重试") from None
-        for log in route_logs:
-            require_current_candidates(log.messages, service._logical_table_entries())
+        entries = service._logical_table_entries()
+        if check_candidates:
+            for log in route_logs:
+                require_current_candidates(log.messages, entries)
         if not record.sql:
             return record
+        require_routed_tables(record, [log.messages for log in route_logs], entries)
         service.ds = next((ds for ds in catalog.ds_list or [] if ds.id == record.datasource), None)
         if service.ds is None:
             raise HTTPException(403, "当前无权访问此记录的数据源")
         from apps.system.crud.assistant import AssistantOutDs
         service.logical_route_physical_datasource_key = AssistantOutDs._physical_datasource_key(service.ds)
         # Same table disambiguation as the live gates had; Data still checks every resolved table.
-        service.logical_route_tables = routed_entries(record, service._logical_table_entries())
+        service.logical_route_tables = routed_entries(record, entries)
         check = service._do_permission_check(record.sql, None, "stored_result")
         reason = (getattr(check, 'reason', None) or '') if check else ''
         if reason == 'permission_service_status_401':
