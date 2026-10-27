@@ -78,7 +78,7 @@ _SQLGLOT_DIALECTS = {
 _KNOWN_SQLGLOT_DIALECTS = frozenset(d.value for d in Dialects if d.value)
 
 # Functions that read outside the catalogued tables: remote servers, files, large objects, or SQL given as a string.
-# Matched against the lower-cased name, qualified as package.function when written that way (DBMS_XMLGEN.GETXML).
+# Matched against the lower-cased name and every dotted suffix of it (pg_catalog.query_to_xml, SYS.DBMS_XMLGEN.GETXML).
 _BLOCKED_FUNCTION_PREFIXES = (
     'openquery', 'openrowset', 'opendatasource', 'dblink', 'pg_read_', 'pg_ls_', 'pg_stat_file', 'pg_current_logfile',
     'lo_', 'query_to_xml', 'table_to_xml', 'schema_to_xml', 'database_to_xml', 'cursor_to_xml', 'ts_stat',
@@ -93,6 +93,9 @@ _ALLOWED_SOURCE_FUNCTIONS = frozenset((
 _ALLOWED_SOURCE_SCHEMAS = frozenset(('', 'pg_catalog', 'sys'))
 # sqlglot's sql_name() spells some classes oddly (J_S_O_N_TABLE, OPEN_J_S_O_N); compare without underscores.
 _ALLOWED_SOURCE_KEYS = frozenset(name.replace('_', '') for name in _ALLOWED_SOURCE_FUNCTIONS)
+
+# String concatenation: || (DPipe), CONCAT, CONCAT_WS, and + (T-SQL).
+_CONCAT_TYPES = (exp.DPipe, exp.Concat, exp.ConcatWs, exp.Add)
 
 SQL_PARSE_FAILED = 'sql_parse_failed'
 UNSUPPORTED_TABLE_SOURCE = 'unsupported_table_source'
@@ -122,11 +125,45 @@ def _function_name(node: exp.Func) -> str:
     return _base_name(node)
 
 
+def _blocked_name(name: str) -> bool:
+    parts = name.split('.')
+    return any('.'.join(parts[i:]).startswith(_BLOCKED_FUNCTION_PREFIXES) for i in range(len(parts)))
+
+
+def _concat_text(node) -> str:
+    """Text a string concatenation builds; any part that is not a literal stands in as the identifier x."""
+    if isinstance(node, exp.Literal):
+        return str(node.this)
+    if isinstance(node, exp.Paren):
+        return _concat_text(node.this)
+    if isinstance(node, (exp.DPipe, exp.Add)):
+        return _concat_text(node.this) + _concat_text(node.expression)
+    if isinstance(node, exp.ConcatWs) and node.expressions:
+        separator, *parts = node.expressions
+        return _concat_text(separator).join(map(_concat_text, parts))
+    if isinstance(node, exp.Concat):
+        return ''.join(map(_concat_text, node.expressions))
+    return 'x'
+
+
+def _in_call(node) -> bool:
+    """Inside the arguments of a function other than a concatenation."""
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.Func) and not isinstance(parent, _CONCAT_TYPES):
+            return True
+        parent = parent.parent
+    return False
+
+
 def _runs_sql_text(stmt: exp.Expression, dialect: Optional[str]) -> bool:
-    """A string argument of a function that is itself a query (query_to_xml('select ...'), EXECUTE-like UDFs)."""
-    for literal in stmt.find_all(exp.Literal):
-        text = literal.this if literal.is_string else None
-        if not text or not literal.find_ancestor(exp.Func) or not re.search(r'\b(select|with)\b', text, re.I):
+    """A string argument of a function that is itself a query (query_to_xml('select ...'), EXECUTE-like UDFs),
+    also when the query is built by concatenating literals ('select * from ' || 'hr.salary')."""
+    texts = [literal.this for literal in stmt.find_all(exp.Literal) if literal.is_string and literal.find_ancestor(exp.Func)]
+    texts += [_concat_text(node) for node in stmt.find_all(*_CONCAT_TYPES)
+              if not isinstance(node.parent, _CONCAT_TYPES) and _in_call(node)]
+    for text in texts:
+        if not text or not re.search(r'\b(select|with)\b', text, re.I):
             continue
         try:
             parsed = sqlglot.parse_one(text, read=dialect)
@@ -139,14 +176,19 @@ def _runs_sql_text(stmt: exp.Expression, dialect: Optional[str]) -> bool:
 
 def _allowed_source_function(func: exp.Func, qualifier: str) -> bool:
     name = _base_name(func).replace('_', '')
-    return (name in _ALLOWED_SOURCE_KEYS and qualifier in _ALLOWED_SOURCE_SCHEMAS
-            and (name != 'table' or func.find(exp.Query) is None))
+    if name not in _ALLOWED_SOURCE_KEYS or qualifier not in _ALLOWED_SOURCE_SCHEMAS:
+        return False
+    if name != 'table':
+        return True
+    # TABLE(expr) returns whatever expr yields as rows: a collection is fine, a query or a user function is not.
+    return func.find(exp.Query) is None and not any(
+        isinstance(inner, exp.Anonymous) or isinstance(inner.parent, exp.Dot)
+        for inner in func.find_all(exp.Func) if inner is not func)
 
 
 def _source_issue(stmt: exp.Expression, dialect: Optional[str]) -> Optional[str]:
     """Why a statement cannot be vouched for by its table references alone, or None."""
-    blocked = sorted({name for name in map(_function_name, stmt.find_all(exp.Func))
-                      if name.startswith(_BLOCKED_FUNCTION_PREFIXES)})
+    blocked = sorted({name for name in map(_function_name, stmt.find_all(exp.Func)) if _blocked_name(name)})
     if blocked:
         return f"reads outside catalogued tables via {blocked}"
     if _runs_sql_text(stmt, dialect):

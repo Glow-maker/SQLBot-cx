@@ -85,7 +85,20 @@ class SQLParserTests(unittest.TestCase):
                     ('SELECT o.id, s.v FROM "sales"."orders" o CROSS JOIN LATERAL "hr"."fn_secret"(o.id) AS s(v)', 'pg'),
                     ('SELECT COUNT(*) AS "c" FROM "HR"."SALARY"@"PROD"', 'dm'),
                     ('SELECT * FROM S.T@LINK', 'oracle'),
-                    ('SELECT * FROM hr.generate_series(1, 3) g', 'pg')):
+                    ('SELECT * FROM hr.generate_series(1, 3) g', 'pg'),
+                    # Schema-qualified blocked names, and SQL text built by concatenation.
+                    ("SELECT pg_catalog.query_to_xml('select * from ' || 'hr.salary', true, false, '')", 'pg'),
+                    ("SELECT pg_catalog.query_to_xml('select * from ' || 'hr.salary', true, false, '') FROM sales.orders o", 'pg'),
+                    ("SELECT SYS.DBMS_XMLGEN.GETXML('select * from ' || 'HR.SALARY') FROM \"SALES\".\"ORDERS\"", 'dm'),
+                    ("SELECT pg_catalog.pg_read_file('/etc/passwd')", 'pg'),
+                    ("SELECT my_exec('select * from ' || 'hr.salary') FROM sales.orders", 'pg'),
+                    ("SELECT my_exec('select * from hr.' || o.name) FROM sales.orders o", 'pg'),
+                    ("SELECT my_exec(CONCAT('select * from ', 'hr.salary')) FROM `biz`.`orders`", 'mysql'),
+                    ("SELECT my_exec(CONCAT_WS(' ', 'select * from', 'hr.salary')) FROM `biz`.`orders`", 'mysql'),
+                    ("SELECT dbo.run_sql('select * from ' + 'hr.salary')", 'sqlserver'),
+                    # TABLE() over a user function is a table function.
+                    ('SELECT t.COLUMN_VALUE FROM TABLE(hr.fn_secret(1)) t', 'oracle'),
+                    ('SELECT t.COLUMN_VALUE FROM TABLE(fn_secret(1)) t', 'oracle')):
                 with self.subTest(sql=sql):
                     self.assertEqual(inspect_table_refs(sql, dialect), (None, 'unsupported_table_source'))
             self.assertEqual(inspect_table_refs('SELECT * FROM (', 'pg'), (None, 'sql_parse_failed'))
@@ -113,7 +126,10 @@ class SQLParserTests(unittest.TestCase):
                  {SQLTableRef(name='fee', schema='dbo')}),
                 ('SELECT number FROM numbers(10)', 'ck', set()),
                 ('SELECT t.COLUMN_VALUE FROM "S"."O" o, TABLE(o.tags) t', 'oracle', {SQLTableRef(name='O', schema='S')}),
-                ("SELECT CONCAT('select', a) FROM sales.orders", 'pg', orders)):  # a word, not a query
+                ("SELECT CONCAT('select', a) FROM sales.orders", 'pg', orders),  # a word, not a query
+                ("SELECT upper('select ' || o.name) FROM sales.orders o", 'pg', orders),  # builds no query over a table
+                ("SELECT o.a || ' / ' || o.b FROM sales.orders o", 'pg', orders),
+                ('SELECT t.COLUMN_VALUE FROM "S"."O" o, TABLE(CAST(o.tags AS t_list)) t', 'oracle', {SQLTableRef(name='O', schema='S')})):
             with self.subTest(sql=sql):
                 self.assertEqual(extract_table_refs(sql, dialect), expected)
 
