@@ -35,7 +35,7 @@ from apps.ai_model.model_factory import LLMConfig, LLMFactory, get_default_confi
 from common.utils.platform_permission import (
     DeniedTable, PermissionCheckResult, check_table_permissions, denied_tables_to_sse_payload, is_permission_check_enabled,
 )
-from common.utils.sql_parser import SQLTableRef, extract_table_refs
+from common.utils.sql_parser import SQLTableRef, extract_table_refs, sqlglot_dialect
 from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     save_error_message, save_sql_exec_data, save_chart_answer, save_chart, \
     finish_record, save_analysis_answer, save_predict_answer, save_predict_data, \
@@ -920,8 +920,11 @@ class LLMService:
     def _default_schema_name(self) -> Optional[str]:
         """Schema the execution connection runs an unqualified table name in, or None when SQLBot cannot tell
         (the name then stays unresolved). Mirrors apps/db/db.py: PostgreSQL gets search_path=db_schema only when
-        db_schema is set; MySQL-family engines run in the connection database; the other engines keep the login's
-        own default, which is what a table labelled with no schema at all (no db_schema, no database) stands for."""
+        db_schema is set; MySQL-family engines run in the connection database; SQL Server is never vouched for;
+        the other engines run in the login's default schema, and only tables labelled with no schema at all
+        (no db_schema, no database) are taken to be there. That assumes Data's connection also uses the login's
+        default; a datasource whose JDBC URL sets the schema by parameter breaks it and is flagged by the
+        intranet precheck (WRONG_SCHEMA) to get db_schema configured."""
         if not self.ds:
             return None
         ds_type = str(getattr(self.ds, "type", "") or "").lower()
@@ -931,8 +934,8 @@ class LLMService:
             return db_schema or None
         if ds_type in ("mysql", "doris", "starrocks", "ck"):
             return database or None
-        if ds_type == "sqlserver" and not database:
-            # pymssql would connect to the login's default database, not necessarily the one Data catalogued.
+        if ds_type == "sqlserver":
+            # SQLBot sets no session schema; pymssql without a database also lands in the login's default database.
             return None
         return "" if not db_schema and not database else None
 
@@ -1296,7 +1299,7 @@ class LLMService:
 
         for item in inputs:
             ref = self._normalize_table_input(item)
-            if ref.get('catalog') and ref['catalog'] != getattr(self.ds, 'dataBase', None):
+            if ref.get('catalog') and str(ref['catalog']).lower() != str(getattr(self.ds, 'dataBase', None) or '').lower():
                 unresolved.append({**ref, 'reason': 'cross_database_reference'})
                 continue
             table_id = ref.get("tableId")
@@ -1387,7 +1390,7 @@ class LLMService:
             # Not a cross-source question: the table exists here, only the schema is missing in the SQL.
             raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
                 "unqualified_table_outside_default_schema",
-                "生成的 SQL 里有表名没写 schema，而这张表不在数据源默认 schema 中，已拒绝执行。请在问题中写明表的完整名称（schema.表名）后重试。",
+                "生成的 SQL 里有表名没写 schema，无法确认它在哪个 schema，已拒绝执行。请在问题中写明表的完整名称（schema.表名）后重试。",
                 unqualified,
             )).decode())
 
@@ -1864,7 +1867,8 @@ class LLMService:
             Query results
         """
         self._check_deadline()
-        require_read_query(sql)
+        # Same dialect as the permission gates; the generic one rejects T-SQL TOP/[brackets] and MySQL backticks.
+        require_read_query(sql, sqlglot_dialect(getattr(self.ds, "type", None)))
         started = time.perf_counter()
         SQLBotLogUtil.info(f"Platform record_id={self.record.id} execution_begin ds_id={self.ds.id}")
         try:

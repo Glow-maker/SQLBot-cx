@@ -403,6 +403,31 @@ class QueryGuardTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             list(bounded_stream(stream, time.monotonic()+.03))
 
+    def test_execution_guard_reads_sql_in_the_datasource_dialect(self):
+        # Real require_read_query: T-SQL TOP/brackets and MySQL backticks must reach the database call.
+        for ds_type, sql in (('sqlserver', 'SELECT TOP 10 [f].[a] AS [a] FROM [dbo].[fee] [f]'),
+                             ('mysql', 'SELECT `a` FROM `bayuan`.`orders` LIMIT 10'),
+                             ('dm', 'SELECT * FROM "DMGT"."T" LIMIT 10')):
+            service = LLMService.__new__(LLMService)
+            service.ds = SimpleNamespace(id=2, type=ds_type)
+            service.record = SimpleNamespace(id=10)
+            service.query_deadline = time.monotonic() + 60
+            with self.subTest(ds_type=ds_type), patch('apps.chat.task.llm.exec_sql', return_value={'data': []}) as execute:
+                service.execute_sql(sql)
+                execute.assert_called_once()
+        service.ds = SimpleNamespace(id=2, type='mysql')
+        with patch('apps.chat.task.llm.exec_sql') as execute:
+            with self.assertRaises(ValueError):
+                service.execute_sql('DELETE FROM `orders`')
+            execute.assert_not_called()
+
+    def test_catalog_part_is_compared_case_insensitively(self):
+        fee = dict(datasourceId=2, tableId=13, name='fee', schemaName='dbo')
+        resolver = self._resolver([fee], ds_type='sqlserver', db_schema='dbo', database='HIS')
+        self.assertEqual(resolver._resolve_table_inputs(self._refs('SELECT TOP 1 * FROM [his].[dbo].[fee]', 'sqlserver'))[0], [fee])
+        self.assertEqual(resolver._resolve_table_inputs(self._refs('SELECT TOP 1 * FROM [other].[dbo].[fee]', 'sqlserver'))[1][0]['reason'],
+                         'cross_database_reference')
+
     def test_late_request_never_reaches_database(self):
         service = LLMService.__new__(LLMService)
         service.query_deadline = time.monotonic()-1

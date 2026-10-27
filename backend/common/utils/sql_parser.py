@@ -64,17 +64,39 @@ def extract_table_names(sql: str, dialect: Optional[str] = None) -> Optional[set
     return {ref.name for ref in refs}
 
 
+_SQLGLOT_DIALECTS = {
+    'mysql': 'mysql', 'mariadb': 'mysql', 'doris': 'doris', 'starrocks': 'starrocks',
+    'sqlserver': 'tsql', 'tsql': 'tsql',
+    'pg': 'postgres', 'postgresql': 'postgres', 'postgres': 'postgres',
+    'kingbase': 'postgres', 'opengauss': 'postgres', 'excel': 'postgres',
+    'ck': 'clickhouse', 'clickhouse': 'clickhouse',
+    'oracle': 'oracle', 'dm': 'oracle', 'redshift': 'redshift',
+}
+
+# Functions that read outside the catalogued tables (remote servers, files, large objects).
+_BLOCKED_FUNCTION_PREFIXES = ('openquery', 'openrowset', 'opendatasource', 'dblink', 'pg_read_', 'pg_ls_dir',
+                              'pg_stat_file', 'lo_')
+
+
+def sqlglot_dialect(ds_type: Optional[str]) -> Optional[str]:
+    """SQLGlot dialect for a datasource type (Data platform or SQLBot), or None for the generic dialect.
+    Never returns a non-SQLGlot name such as 'dm' or 'es', which SQLGlot would reject as an unknown dialect."""
+    return _SQLGLOT_DIALECTS.get(str(ds_type or '').strip().lower())
+
+
+def _function_name(node: exp.Func) -> str:
+    return str(node.name if isinstance(node, exp.Anonymous) else node.sql_name() or '').lower()
+
+
 def extract_table_refs(sql: str, dialect: Optional[str] = None) -> Optional[set[SQLTableRef]]:
     """
     从 SQL 中提取真实物理表引用，保留 schema.table 信息。
+    表来源不是普通表名（表值函数、OPENQUERY、超过三段的名称）或调用了读外部数据的函数时返回 None（拒绝），
+    不能当作“不涉及任何表”放行。
     """
     if not sql or not sql.strip():
         return set()
-    # 平台数据源类型不全是 SQLGlot 方言名（与 knowledge.validate_sql 的映射一致）；
-    # 其余类型（如 dm）仍走下面的通用方言兜底。
-    if dialect:
-        dialect = {'pg': 'postgres', 'postgresql': 'postgres', 'sqlserver': 'tsql',
-                   'ck': 'clickhouse'}.get(str(dialect).lower(), dialect)
+    dialect = sqlglot_dialect(dialect)
     try:
         parsed_list = sqlglot.parse(sql, dialect=dialect)
     except sqlglot.errors.ParseError as exc:
@@ -93,6 +115,11 @@ def extract_table_refs(sql: str, dialect: Optional[str] = None) -> Optional[set[
     for stmt in parsed_list:
         if stmt is None:
             continue
+        blocked = [name for name in map(_function_name, stmt.find_all(exp.Func))
+                   if name.startswith(_BLOCKED_FUNCTION_PREFIXES)]
+        if blocked:
+            SQLBotLogUtil.warning(f"SQL reads outside catalogued tables via {sorted(set(blocked))}; deny")
+            return None
         try:
             scopes = list(traverse_scope(stmt))
             tables = [source for scope in scopes for _, source in scope.selected_sources.values()
@@ -101,8 +128,10 @@ def extract_table_refs(sql: str, dialect: Optional[str] = None) -> Optional[set[
             return None
         for table in tables:
             name = table.name
-            if not name:
-                continue
+            if not isinstance(table.this, exp.Identifier) or not name:
+                # Table-valued function, OPENQUERY, or a name with more than three parts: not a catalogued table.
+                SQLBotLogUtil.warning(f"SQL table source is not a plain table name: {table.sql()[:80]}; deny")
+                return None
             table_refs.add(SQLTableRef(
                 name=str(name),
                 schema=_identifier_text(table.db),

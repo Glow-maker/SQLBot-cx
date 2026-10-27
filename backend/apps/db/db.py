@@ -665,11 +665,8 @@ def exec_sql(ds: CoreDatasource | AssistantOutDsSchema, sql: str, origin_column=
 
 def check_sql_read(sql: str, ds: CoreDatasource | AssistantOutDsSchema):
     try:
-        dialect = None
-        if equals_ignore_case(ds.type, 'mysql', 'doris', 'starrocks'):
-            dialect = 'mysql'
-        elif equals_ignore_case(ds.type, 'sqlServer'):
-            dialect = 'tsql'
+        from common.utils.sql_parser import sqlglot_dialect
+        dialect = sqlglot_dialect(ds.type)
 
         statements = sqlglot.parse(sql, dialect=dialect)
 
