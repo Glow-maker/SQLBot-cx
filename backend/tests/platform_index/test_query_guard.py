@@ -407,7 +407,7 @@ class QueryGuardTests(unittest.TestCase):
         # Real require_read_query: T-SQL TOP/brackets and MySQL backticks must reach the database call.
         for ds_type, sql in (('sqlserver', 'SELECT TOP 10 [f].[a] AS [a] FROM [dbo].[fee] [f]'),
                              ('mysql', 'SELECT `a` FROM `bayuan`.`orders` LIMIT 10'),
-                             ('dm', 'SELECT * FROM "DMGT"."T" LIMIT 10')):
+                             ('dm', 'SELECT TOP 10 * FROM "DMGT"."T"')):  # TOP fails in the generic dialect
             service = LLMService.__new__(LLMService)
             service.ds = SimpleNamespace(id=2, type=ds_type)
             service.record = SimpleNamespace(id=10)
@@ -420,6 +420,34 @@ class QueryGuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.execute_sql('DELETE FROM `orders`')
             execute.assert_not_called()
+
+    def test_database_layer_read_check_uses_the_datasource_dialect(self):
+        from apps.db.db import check_sql_read
+        self.assertTrue(check_sql_read('SELECT TOP 10 [a] FROM [dbo].[fee]', SimpleNamespace(type='sqlserver')))
+        self.assertTrue(check_sql_read('SELECT `a` FROM `bayuan`.`orders` LIMIT 10', SimpleNamespace(type='mysql')))
+        self.assertTrue(check_sql_read('SELECT TOP 10 * FROM "DMGT"."T"', SimpleNamespace(type='dm')))
+        self.assertFalse(check_sql_read('DELETE FROM `orders`', SimpleNamespace(type='mysql')))
+        with self.assertRaises(ValueError):  # generic dialect, as before the shared mapping
+            check_sql_read('SELECT TOP 10 [a] FROM [dbo].[fee]', SimpleNamespace(type='unknown_vendor'))
+
+    def test_unsupported_table_source_is_reported_as_such(self):
+        service = self._resolver([], db_schema='public')
+        service._logical_datasource_enabled = lambda: True
+        with patch('common.utils.sql_parser.SQLBotLogUtil.warning'):
+            with self.assertRaises(Exception) as caught:
+                service._validate_logical_sql_route("SELECT query_to_xml('select * from hr.salary', true, false, '')", None)
+            self.assertIn('unsupported_table_source', str(caught.exception))
+            self.assertNotIn('cross_source_not_supported', str(caught.exception))
+            service._check_deadline = lambda: None
+            with patch('apps.chat.task.llm.is_permission_check_enabled', return_value=True):
+                result = service._do_permission_check('SELECT * FROM hr.fn_secret(1) s', None, 'gate2')
+        self.assertFalse(result.allowed)
+        self.assertEqual(result.reason, 'unsupported_table_source')
+        payload = service._gate_denied_payload(result, 'gate2')
+        self.assertEqual((payload['type'], payload['reason']), ('datasource_not_found', 'unsupported_table_source'))
+        stored, _ = self._stored_check(SimpleNamespace(allowed=False, reason='unsupported_table_source'))
+        self.assertEqual(stored.status_code, 403)
+        self.assertIn('不支持的写法', stored.detail)
 
     def test_catalog_part_is_compared_case_insensitively(self):
         fee = dict(datasourceId=2, tableId=13, name='fee', schemaName='dbo')

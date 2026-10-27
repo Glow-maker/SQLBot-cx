@@ -35,7 +35,9 @@ from apps.ai_model.model_factory import LLMConfig, LLMFactory, get_default_confi
 from common.utils.platform_permission import (
     DeniedTable, PermissionCheckResult, check_table_permissions, denied_tables_to_sse_payload, is_permission_check_enabled,
 )
-from common.utils.sql_parser import SQLTableRef, extract_table_refs, sqlglot_dialect
+from common.utils.sql_parser import (SQLTableRef, UNSUPPORTED_TABLE_SOURCE, inspect_table_refs,
+                                     sqlglot_dialect)
+
 from apps.chat.curd.chat import save_question, save_sql_answer, save_sql, \
     save_error_message, save_sql_exec_data, save_chart_answer, save_chart, \
     finish_record, save_analysis_answer, save_predict_answer, save_predict_data, \
@@ -74,6 +76,10 @@ dynamic_subsql_prefix = 'select * from sqlbot_dynamic_temp_table_'
 session_maker = scoped_session(sessionmaker(bind=engine, class_=Session))
 
 i18n = I18n()
+
+
+UNSUPPORTED_TABLE_SOURCE_MESSAGE = ("生成的 SQL 用到了问数不支持的写法（表值函数、远程查询、执行 SQL 字符串的函数等），"
+                                    "已拒绝执行。请换一种问法后重试。")
 
 
 class LLMService:
@@ -967,6 +973,12 @@ class LLMService:
             return parts[-2], parts[-1]
         return None, parts[0] if parts else None
 
+    def _gate_denied_payload(self, result, gate_label: str) -> dict:
+        # An unsupported table source is not a missing grant; say so instead of showing the permission card.
+        if result.reason == UNSUPPORTED_TABLE_SOURCE:
+            return self._datasource_not_found_payload(UNSUPPORTED_TABLE_SOURCE, UNSUPPORTED_TABLE_SOURCE_MESSAGE, [])
+        return denied_tables_to_sse_payload(result, gate_label=gate_label)
+
     @staticmethod
     def _datasource_not_found_payload(reason: str, message: str, candidates: Optional[list[dict[str, Any]]] = None):
         return {
@@ -1362,7 +1374,10 @@ class LLMService:
         if not self._logical_datasource_enabled() or not self.ds:
             return
         dialect = getattr(self.ds, "type", None) or None
-        parser_refs = extract_table_refs(sql, dialect=dialect)
+        parser_refs, parse_issue = inspect_table_refs(sql, dialect=dialect)
+        if parser_refs is None and parse_issue == UNSUPPORTED_TABLE_SOURCE:
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                UNSUPPORTED_TABLE_SOURCE, UNSUPPORTED_TABLE_SOURCE_MESSAGE, [])).decode())
         if parser_refs is None:
             raise SingleMessageError(orjson.dumps({
                 "type": "cross_source_not_supported",
@@ -2103,9 +2118,7 @@ class LLMService:
             # fail-closed：服务异常或 SQL parse 失败 → 拒绝执行。
             gate1_result = self._do_permission_check(sql=sql, llm_tables=tables, gate_label="gate1")
             if gate1_result is not None and not gate1_result.allowed:
-                raise SingleMessageError(orjson.dumps(
-                    denied_tables_to_sse_payload(gate1_result, gate_label="gate1")
-                ).decode())
+                raise SingleMessageError(orjson.dumps(self._gate_denied_payload(gate1_result, "gate1")).decode())
 
             if ((not self.current_assistant or is_page_embedded) and is_normal_user(
                     self.current_user)) or use_dynamic_ds:
@@ -2172,9 +2185,7 @@ class LLMService:
             # 引入新表绕过 Gate 1。对最终要执行的 SQL 二次解析校验。
             gate2_result = self._do_permission_check(sql=real_execute_sql, llm_tables=None, gate_label="gate2")
             if gate2_result is not None and not gate2_result.allowed:
-                raise SingleMessageError(orjson.dumps(
-                    denied_tables_to_sse_payload(gate2_result, gate_label="gate2")
-                ).decode())
+                raise SingleMessageError(orjson.dumps(self._gate_denied_payload(gate2_result, "gate2")).decode())
 
             yield from progress.update('permission', 'completed')
             yield from progress.update('query')
@@ -2587,7 +2598,8 @@ class LLMService:
         统一的权限校验入口。fail-closed：
           - 关闭开关时返回 None（调用方"放行"）
           - 启用时一定返回 PermissionCheckResult（allowed=True/False）
-          - SQL parse 失败时返回 allowed=False，reason='sql_parse_failed'
+          - SQL parse 失败时返回 allowed=False，reason='sql_parse_failed'；表来源不受支持（表值函数、远程查询、
+            执行 SQL 字符串的函数等）时 reason='unsupported_table_source'
         """
         self._check_deadline()
         if not is_permission_check_enabled():
@@ -2599,11 +2611,11 @@ class LLMService:
         if self.ds is not None:
             dialect = getattr(self.ds, "type", None) or None
 
-        parser_refs = extract_table_refs(sql, dialect=dialect)
+        parser_refs, parse_issue = inspect_table_refs(sql, dialect=dialect)
         if parser_refs is None:
-            # parse 失败：fail-closed 拒绝，避免越权
-            SQLBotLogUtil.warning(f"[{gate_label}] SQL parser failed, deny by default")
-            return PermissionCheckResult(allowed=False, reason="sql_parse_failed")
+            # parse 失败或表来源不受支持：fail-closed 拒绝，避免越权
+            SQLBotLogUtil.warning(f"[{gate_label}] SQL parser denied ({parse_issue}), deny by default")
+            return PermissionCheckResult(allowed=False, reason=parse_issue or "sql_parse_failed")
 
         inputs = list(parser_refs)
         if not inputs and llm_tables:

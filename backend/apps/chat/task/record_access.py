@@ -134,6 +134,8 @@ def require_record_access(session, user, record_id, *, current_assistant=None, c
             raise HTTPException(401, "登录状态已失效，请重新登录后重试")
         if reason.startswith('permission_service_'):
             raise HTTPException(503, "权限服务暂不可用，请稍后重试")
+        if reason == 'unsupported_table_source':
+            raise HTTPException(403, "这条记录的 SQL 用到了问数不支持的写法，已不能查看，请重新提问")
         if not check or not check.allowed:
             raise HTTPException(403, "数据授权已变化，请使用当前可查询表重新提问")
     return record
