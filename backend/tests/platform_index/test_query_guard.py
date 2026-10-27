@@ -130,24 +130,104 @@ class QueryGuardTests(unittest.TestCase):
         result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders, public], both)
         self.assertEqual(result.status_code, 403)
 
-    def test_routed_table_must_keep_its_schema_and_name(self):
+    def test_routed_table_must_keep_its_name(self):
         import json
         orders = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods', fields=[dict(name='amount')])
         route = self._route({'datasourceId': 2, 'tableId': 7})
         card = dict(orders)
         messages = [dict(type='human', content=json.dumps(dict(tables=[card, dict(datasourceId=2, tableId=30, name='gone')])))]
-        # Other candidates and fields may drift; only the routed table's identity matters.
+        # Other candidates and fields may drift; only the routed table matters.
         result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, fields=[])], route, route_messages=messages)
         self.assertEqual(result.id, 10)
-        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, name='ORDERS', schemaName='ODS')], route, route_messages=messages)
-        self.assertEqual(result.id, 10)  # case only, same identity as the SQL resolver
-        for changed in (dict(orders, schemaName='public'), dict(orders, name='orders_v2')):
-            result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [changed], route, route_messages=messages)
-            self.assertEqual(result.status_code, 403, changed)
-            service._do_permission_check.assert_not_called()
-        # Unreadable route log: still requires the routed table to exist.
-        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders], route, route_messages=[dict(type='human', content='x')])
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, name='ORDERS')], route, route_messages=messages)
+        self.assertEqual(result.id, 10)  # case only
+        # Configuring db_schema or backfilling the registered schema relabels the same table; the SQL recheck decides.
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, schemaName='public')], route, route_messages=messages)
         self.assertEqual(result.id, 10)
+        service._do_permission_check.assert_called_once()
+        result, service = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, name='orders_v2')], route, route_messages=messages)
+        self.assertEqual(result.status_code, 403)
+        service._do_permission_check.assert_not_called()
+        # Without a readable route log the route answer's (possibly qualified) name is used.
+        named = self._route({'datasourceId': 2, 'tableId': 7, 'name': 'ods.orders'})
+        unreadable = [dict(type='human', content='x')]
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [orders], named, route_messages=unreadable)
+        self.assertEqual(result.id, 10)
+        result, _ = self._stored_check(SimpleNamespace(allowed=True, reason=None), [dict(orders, name='renamed')], named, route_messages=unreadable)
+        self.assertEqual(result.status_code, 403)
+
+    def test_records_without_sql_still_need_their_routed_tables(self):
+        # e.g. denied at the first gate: no SQL, but the route answer and sql_answer name the routed table.
+        orders = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods')
+        route = self._route({'datasourceId': 2, 'tableId': 7, 'name': 'orders'})
+        for entries, expected in (([orders], None), ([], 403)):
+            record = SimpleNamespace(id=10, create_by=1, chat_id=5, datasource=2, sql=None, datasource_select_answer=route)
+            session = MagicMock()
+            session.get.side_effect = [record, SimpleNamespace(create_by=1, oid=124)]
+            session.query.return_value.filter.return_value.all.return_value = []
+            service = MagicMock()
+            service._ensure_out_ds_instance.return_value = SimpleNamespace(ds_list=[SimpleNamespace(id=2)])
+            service._logical_table_entries.return_value = entries
+            with patch('apps.chat.task.record_access.settings.PLATFORM_DATASOURCE_ENABLED', True), \
+                 patch('apps.chat.task.record_access.RequestContext.get_request', return_value=SimpleNamespace(state=SimpleNamespace(assistant=object()))), \
+                 patch('apps.chat.task.llm.LLMService.__new__', return_value=service):
+                if expected:
+                    with self.assertRaises(HTTPException) as caught:
+                        require_record_access(session, SimpleNamespace(id=1, oid=124), 10, check_candidates=False)
+                    self.assertEqual(caught.exception.status_code, expected)
+                else:
+                    self.assertIs(require_record_access(session, SimpleNamespace(id=1, oid=124), 10, check_candidates=False), record)
+            service._do_permission_check.assert_not_called()
+
+    @staticmethod
+    def _resolver(entries, db_schema=None, database=None, routed=()):
+        service = LLMService.__new__(LLMService)
+        service.ds = SimpleNamespace(id=2, db_schema=db_schema, dataBase=database)
+        service.logical_route_tables = list(routed)
+        service._current_datasource_entries = lambda: list(entries)
+        return service
+
+    @staticmethod
+    def _refs(sql, dialect='pg'):
+        from common.utils.sql_parser import extract_table_refs
+        return list(extract_table_refs(sql, dialect))
+
+    def test_unqualified_name_only_resolves_in_the_connection_default_schema(self):
+        ods = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods')
+        public = dict(datasourceId=2, tableId=8, name='orders', schemaName='public')
+        # Granted only ods.orders; "FROM orders" would read public.orders on a search_path=public connection.
+        resolved, unresolved = self._resolver([ods], db_schema='public')._resolve_table_inputs(self._refs('SELECT * FROM orders'))
+        self.assertEqual(resolved, [])
+        self.assertEqual(unresolved[0]['reason'], 'unqualified_table_outside_default_schema')
+        # Even when the record was routed to ods.orders, the unqualified name is the default-schema table.
+        resolved, _ = self._resolver([ods, public], db_schema='public', routed=[ods])._resolve_table_inputs(self._refs('SELECT * FROM orders'))
+        self.assertEqual(resolved, [public])
+        resolved, unresolved = self._resolver([ods, public], db_schema='public')._resolve_table_inputs(self._refs('SELECT * FROM ods.orders'))
+        self.assertEqual((resolved, unresolved), ([ods], []))
+
+    def test_default_schema_falls_back_like_tables_registered_without_schema(self):
+        # MySQL: no db_schema, the connection database is the default schema.
+        mysql = dict(datasourceId=2, tableId=7, name='orders', schemaName='bayuan')
+        resolved, _ = self._resolver([mysql], database='bayuan')._resolve_table_inputs(self._refs('SELECT * FROM orders', 'mysql'))
+        self.assertEqual(resolved, [mysql])
+        # Registered without schema on a source without db_schema: the catalog names it after the database.
+        blank = dict(datasourceId=2, tableId=9, name='visit', schemaName='hisdb')
+        explicit = dict(datasourceId=2, tableId=10, name='ward', schemaName='ODS')
+        service = self._resolver([blank, explicit], database='hisdb')
+        self.assertEqual(service._resolve_table_inputs(self._refs('SELECT * FROM visit'))[0], [blank])
+        self.assertEqual(service._resolve_table_inputs(self._refs('SELECT * FROM ward'))[1][0]['reason'],
+                         'unqualified_table_outside_default_schema')
+        self.assertEqual(service._resolve_table_inputs(self._refs('SELECT * FROM ods.ward'))[0], [explicit])
+
+    def test_route_disambiguation_stays_inside_the_name_matches(self):
+        first = dict(datasourceId=2, tableId=7, name='orders', schemaName='public')
+        second = dict(datasourceId=3, tableId=8, name='orders', schemaName='public')
+        other_schema = dict(datasourceId=2, tableId=9, name='orders', schemaName='ods')
+        resolver = self._resolver([first, second, other_schema], db_schema='public', routed=[second])
+        self.assertEqual(resolver._resolve_table_inputs(self._refs('SELECT * FROM orders'))[0], [second])
+        resolver = self._resolver([first, second, other_schema], db_schema='public', routed=[other_schema])
+        self.assertEqual(resolver._resolve_table_inputs(self._refs('SELECT * FROM orders'))[1][0]['reason'],
+                         'ambiguous_table_reference')
 
     def test_stored_recheck_separates_service_failures_from_revocation(self):
         for reason, status in (('permission_service_timeout', 503), ('permission_service_status_401', 401),
@@ -171,12 +251,14 @@ class QueryGuardTests(unittest.TestCase):
         for without_steps in (True, False):
             session = MagicMock()
             session.get.return_value = SimpleNamespace(id=10, create_by=1)
-            with patch('apps.chat.task.record_access.require_record_access') as access:
+            with patch('apps.chat.task.record_access.require_record_access') as access, \
+                 patch('apps.chat.task.record_access.require_record_owner') as owner:
                 try:
                     get_chat_log_history(session, 10, SimpleNamespace(id=1, oid=124), without_steps)
                 except Exception:
                     pass  # later formatting does not matter here
             self.assertEqual(access.called, not without_steps)
+            self.assertEqual(owner.called, without_steps)  # usage still checks chat owner and tenant
             if not without_steps:
                 self.assertNotIn('check_candidates', access.call_args.kwargs)
 

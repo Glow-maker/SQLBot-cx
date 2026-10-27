@@ -917,6 +917,11 @@ class LLMService:
 
         return fuse(question, keyword_entries, embedding_entries, limit)
 
+    def _default_schema_name(self) -> str:
+        """Schema an unqualified table name runs in on this datasource's connection: db_schema (PG search_path),
+        else the JDBC database (MySQL), i.e. the same fallback as tables registered without schema."""
+        return self._table_schema_name(self.ds, None) if self.ds else ""
+
     @staticmethod
     def _table_schema_name(ds, table) -> str:
         schema_name = getattr(table, "schemaName", None)
@@ -1304,11 +1309,21 @@ class LLMService:
                     and (not schema or str(entry.get("schemaName", "")).lower() == schema)
                     and (ds_id is None or str(entry.get("datasourceId")) == ds_id)
                 ]
+                if not schema and matches:
+                    # The connection runs an unqualified name in its default schema, so only a table there
+                    # can vouch for it; a same-named granted table in another schema must not.
+                    default_schema = self._default_schema_name().lower()
+                    matches = [entry for entry in matches
+                               if str(entry.get("schemaName", "")).lower() == default_schema]
+                    if not matches:
+                        unresolved.append({**ref, "reason": "unqualified_table_outside_default_schema"})
+                        continue
 
             if len(matches) > 1 and not schema_name:
+                routed = {(str(entry.get("datasourceId")), str(entry.get("tableId"))) for entry in route_entries}
                 route_matches = [
-                    entry for entry in route_entries
-                    if str(entry.get("name", "")).lower() == str(table_name or "").lower()
+                    entry for entry in matches
+                    if (str(entry.get("datasourceId")), str(entry.get("tableId"))) in routed
                 ]
                 if len(route_matches) == 1:
                     matches = route_matches

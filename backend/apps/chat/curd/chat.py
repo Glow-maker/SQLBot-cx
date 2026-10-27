@@ -322,8 +322,8 @@ def denied_records(session: SessionDep, current_user: CurrentUser, current_assis
     from apps.chat.task.record_access import require_record_access
     from apps.system.crud.assistant import AssistantOutDsFactory
     catalog = None
-    # Records without SQL (and derived ones, whose base record has SQL) never need the catalog otherwise.
-    if current_assistant and any(record.sql for record in records):
+    # Records with SQL or a stored route are rechecked against the catalog; read it once for all of them.
+    if current_assistant and any(record.sql or getattr(record, 'datasource_select_answer', None) for record in records):
         try:
             catalog = AssistantOutDsFactory.get_instance(current_assistant)
         except Exception:
@@ -617,11 +617,13 @@ def get_chat_log_history(session: SessionDep, chat_record_id: int, current_user:
         ChatLogHistory: 包含历史步骤和时间信息的对象
     """
     # 1. 首先验证ChatRecord存在且属于当前用户
-    chat_record = session.get(ChatRecord, chat_record_id)
+    from apps.chat.task.record_access import require_record_access, require_record_owner
     if not without_steps:
-        # Steps include the stored routing prompt; usage totals only need the ownership checks below.
-        from apps.chat.task.record_access import require_record_access
+        # Steps include the stored routing prompt; usage totals only need the record, chat and tenant ownership.
         require_record_access(session, current_user, chat_record_id)
+    else:
+        require_record_owner(session, current_user, chat_record_id)
+    chat_record = session.get(ChatRecord, chat_record_id)
     if not chat_record:
         raise Exception(f"ChatRecord with id {chat_record_id} not found")
 

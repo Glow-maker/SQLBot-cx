@@ -27,42 +27,45 @@ def require_current_candidates(messages, entries):
             raise HTTPException(403, '历史目录授权已变化，请使用当前可查询表重新提问') from None
 
 
-def routed_keys(record):
-    """(datasourceId, tableId) of the tables the record was routed to, from its stored route answer."""
+def routed_tables(record):
+    """{(datasourceId, tableId): table name} of the tables the record was routed to, from its stored route answer."""
     try:
-        content = json.loads(record.datasource_select_answer or '{}').get('content') or ''
+        content = json.loads(getattr(record, 'datasource_select_answer', None) or '{}').get('content') or ''
         tables = json.loads(extract_nested_json(content) or '{}').get('tables') or []
     except (TypeError, ValueError, AttributeError):
-        return set()
-    # Same keys the live router accepts (llm.py route_logical_datasource).
-    return {(str(t.get('datasourceId') or t.get('datasource_id')), str(t.get('tableId') or t.get('id')))
-            for t in tables if isinstance(t, dict)}
+        return {}
+    # Same keys the live router accepts (llm.py route_logical_datasource); its name may be qualified.
+    return {(str(t.get('datasourceId') or t.get('datasource_id')), str(t.get('tableId') or t.get('id'))):
+            str(t.get('name') or '').rsplit('.', 1)[-1] for t in tables if isinstance(t, dict)}
 
 
 def routed_entries(record, entries):
     """Current catalog entries the record was routed to; tables no longer in the catalog stay out."""
-    routed = routed_keys(record)
+    routed = routed_tables(record)
     return [e for e in entries if (str(e.get('datasourceId')), str(e.get('tableId'))) in routed]
 
 
 def require_routed_tables(record, route_messages, entries):
-    """The tables a stored result was routed to must still be in the catalog under the same schema and name.
-    Otherwise an unqualified name in the stored SQL could resolve to another granted table and pass Data."""
+    """The tables a stored record was routed to must still be in the catalog under the same name.
+    The SQL recheck already resolves unqualified names in the connection's default schema; this also
+    withholds a record whose routed table was revoked or renamed. Schema is not compared: configuring
+    db_schema or backfilling a registered schema changes the label of the same table."""
     current = {(str(e.get('datasourceId')), str(e.get('tableId'))): e for e in entries}
-    cards = {}
+    names = routed_tables(record)
     for messages in route_messages:
         for message in messages or []:
             if message.get('type') != 'human':
                 continue
             try:
                 for card in json.loads(message['content'])['tables']:
-                    cards[(str(card['datasourceId']), str(card['tableId']))] = card
+                    key = (str(card['datasourceId']), str(card['tableId']))
+                    if key in names:
+                        names[key] = str(card.get('name') or names[key])
             except (KeyError, TypeError, ValueError):
-                continue  # no comparable card; existence is still checked below
-    for key in routed_keys(record):
-        entry, card = current.get(key), cards.get(key)
-        if not entry or (card and any(str(card.get(k) or '').lower() != str(entry.get(k) or '').lower()
-                                      for k in ('schemaName', 'name'))):
+                continue  # keep the route answer's name
+    for key, name in names.items():
+        entry = current.get(key)
+        if not entry or (name and name.lower() != str(entry.get('name') or '').lower()):
             raise HTTPException(403, '数据授权已变化，请使用当前可查询表重新提问')
 
 
@@ -85,10 +88,11 @@ def require_record_access(session, user, record_id, *, current_assistant=None, c
         require_record_access(session, user, base_id, current_assistant=current_assistant,
                               check_candidates=False, catalog=catalog)
     route_logs = []
-    if settings.PLATFORM_DATASOURCE_ENABLED and (check_candidates or record.sql):
+    routed = settings.PLATFORM_DATASOURCE_ENABLED and bool(routed_tables(record))
+    if settings.PLATFORM_DATASOURCE_ENABLED and (check_candidates or record.sql or routed):
         route_logs = session.query(ChatLog).filter(ChatLog.pid == record_id,
             ChatLog.operate == OperationEnum.CHOOSE_DATASOURCE).all()
-    if settings.PLATFORM_DATASOURCE_ENABLED and (record.sql or route_logs):
+    if settings.PLATFORM_DATASOURCE_ENABLED and (record.sql or route_logs or routed):
         from apps.chat.task.llm import LLMService
         service = LLMService.__new__(LLMService)
         service.current_user = user
@@ -113,9 +117,10 @@ def require_record_access(session, user, record_id, *, current_assistant=None, c
         if check_candidates:
             for log in route_logs:
                 require_current_candidates(log.messages, entries)
+        # Also for records without SQL (e.g. denied at the first gate): they still carry routed table names.
+        require_routed_tables(record, [log.messages for log in route_logs], entries)
         if not record.sql:
             return record
-        require_routed_tables(record, [log.messages for log in route_logs], entries)
         service.ds = next((ds for ds in catalog.ds_list or [] if ds.id == record.datasource), None)
         if service.ds is None:
             raise HTTPException(403, "当前无权访问此记录的数据源")
