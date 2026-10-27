@@ -180,15 +180,15 @@ class QueryGuardTests(unittest.TestCase):
             service._do_permission_check.assert_not_called()
 
     @staticmethod
-    def _resolver(entries, db_schema=None, database=None, routed=()):
+    def _resolver(entries, ds_type='pg', db_schema=None, database=None, routed=()):
         service = LLMService.__new__(LLMService)
-        service.ds = SimpleNamespace(id=2, db_schema=db_schema, dataBase=database)
+        service.ds = SimpleNamespace(id=2, type=ds_type, db_schema=db_schema, dataBase=database)
         service.logical_route_tables = list(routed)
         service._current_datasource_entries = lambda: list(entries)
         return service
 
     @staticmethod
-    def _refs(sql, dialect='pg'):
+    def _refs(sql, dialect='postgres'):
         from common.utils.sql_parser import extract_table_refs
         return list(extract_table_refs(sql, dialect))
 
@@ -205,19 +205,27 @@ class QueryGuardTests(unittest.TestCase):
         resolved, unresolved = self._resolver([ods, public], db_schema='public')._resolve_table_inputs(self._refs('SELECT * FROM ods.orders'))
         self.assertEqual((resolved, unresolved), ([ods], []))
 
-    def test_default_schema_falls_back_like_tables_registered_without_schema(self):
-        # MySQL: no db_schema, the connection database is the default schema.
-        mysql = dict(datasourceId=2, tableId=7, name='orders', schemaName='bayuan')
-        resolved, _ = self._resolver([mysql], database='bayuan')._resolve_table_inputs(self._refs('SELECT * FROM orders', 'mysql'))
-        self.assertEqual(resolved, [mysql])
-        # Registered without schema on a source without db_schema: the catalog names it after the database.
-        blank = dict(datasourceId=2, tableId=9, name='visit', schemaName='hisdb')
-        explicit = dict(datasourceId=2, tableId=10, name='ward', schemaName='ODS')
-        service = self._resolver([blank, explicit], database='hisdb')
-        self.assertEqual(service._resolve_table_inputs(self._refs('SELECT * FROM visit'))[0], [blank])
-        self.assertEqual(service._resolve_table_inputs(self._refs('SELECT * FROM ward'))[1][0]['reason'],
-                         'unqualified_table_outside_default_schema')
-        self.assertEqual(service._resolve_table_inputs(self._refs('SELECT * FROM ods.ward'))[0], [explicit])
+    def test_default_schema_follows_what_each_engine_connection_uses(self):
+        def resolve(entries, sql, dialect='postgres', **ds):
+            return self._resolver(entries, **ds)._resolve_table_inputs(self._refs(sql, dialect))
+        outside = 'unqualified_table_outside_default_schema'
+        # MySQL runs in the connection database; db_schema is never applied to the session.
+        bayuan = dict(datasourceId=2, tableId=7, name='orders', schemaName='bayuan')
+        labelled = dict(datasourceId=2, tableId=8, name='orders', schemaName='other')
+        self.assertEqual(resolve([bayuan, labelled], 'SELECT * FROM orders', 'mysql', ds_type='mysql', db_schema='other', database='bayuan')[0], [bayuan])
+        self.assertEqual(resolve([labelled], 'SELECT * FROM orders', 'mysql', ds_type='mysql', db_schema='other', database='bayuan')[1][0]['reason'], outside)
+        # PostgreSQL without db_schema: SQLBot sets no search_path, so nothing is vouched for.
+        hisdb = dict(datasourceId=2, tableId=9, name='visit', schemaName='hisdb')
+        self.assertEqual(resolve([hisdb], 'SELECT * FROM visit', ds_type='pg', database='hisdb')[1][0]['reason'], outside)
+        # DM and similar keep the login's default schema: only tables labelled with no schema at all match.
+        bare = dict(datasourceId=2, tableId=10, name='ward', schemaName='')
+        dmgt = dict(datasourceId=2, tableId=11, name='ward', schemaName='DMGT')
+        self.assertEqual(resolve([bare, dmgt], 'SELECT * FROM ward', ds_type='dm')[0], [bare])
+        self.assertEqual(resolve([dmgt], 'SELECT * FROM ward', ds_type='dm')[1][0]['reason'], outside)
+        self.assertEqual(resolve([dmgt], 'SELECT * FROM ward', ds_type='dm', db_schema='DMGT')[1][0]['reason'], outside)
+        self.assertEqual(resolve([dmgt], 'SELECT * FROM dmgt.ward', ds_type='dm', db_schema='DMGT')[0], [dmgt])
+        his = dict(datasourceId=2, tableId=12, name='fee', schemaName='HIS')
+        self.assertEqual(resolve([his], 'SELECT * FROM fee', 'tsql', ds_type='sqlserver', database='HIS')[1][0]['reason'], outside)
 
     def test_route_disambiguation_stays_inside_the_name_matches(self):
         first = dict(datasourceId=2, tableId=7, name='orders', schemaName='public')
@@ -228,6 +236,18 @@ class QueryGuardTests(unittest.TestCase):
         resolver = self._resolver([first, second, other_schema], db_schema='public', routed=[other_schema])
         self.assertEqual(resolver._resolve_table_inputs(self._refs('SELECT * FROM orders'))[1][0]['reason'],
                          'ambiguous_table_reference')
+
+    def test_live_route_reports_a_missing_schema_instead_of_a_cross_source_question(self):
+        ods = dict(datasourceId=2, tableId=7, name='orders', schemaName='ods', physicalDatasourceKey='pg|h1')
+        elsewhere = dict(datasourceId=5, tableId=50, name='orders', schemaName='public', physicalDatasourceKey='pg|h2')
+        service = self._resolver([ods], db_schema='public')
+        service._logical_datasource_enabled = lambda: True
+        service._logical_table_entries = lambda: [ods, elsewhere]
+        service.logical_route_physical_datasource_key = 'pg|h1'
+        with self.assertRaises(Exception) as caught:
+            service._validate_logical_sql_route('SELECT * FROM orders', None)
+        self.assertIn('unqualified_table_outside_default_schema', str(caught.exception))
+        self.assertNotIn('cross_source_not_supported', str(caught.exception))
 
     def test_stored_recheck_separates_service_failures_from_revocation(self):
         for reason, status in (('permission_service_timeout', 503), ('permission_service_status_401', 401),

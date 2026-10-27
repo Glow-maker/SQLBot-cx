@@ -917,10 +917,21 @@ class LLMService:
 
         return fuse(question, keyword_entries, embedding_entries, limit)
 
-    def _default_schema_name(self) -> str:
-        """Schema an unqualified table name runs in on this datasource's connection: db_schema (PG search_path),
-        else the JDBC database (MySQL), i.e. the same fallback as tables registered without schema."""
-        return self._table_schema_name(self.ds, None) if self.ds else ""
+    def _default_schema_name(self) -> Optional[str]:
+        """Schema the execution connection runs an unqualified table name in, or None when SQLBot cannot tell
+        (the name then stays unresolved). Mirrors apps/db/db.py: PostgreSQL gets search_path=db_schema only when
+        db_schema is set; MySQL-family engines run in the connection database; the other engines keep the login's
+        own default, which is what a table labelled with no schema at all (no db_schema, no database) stands for."""
+        if not self.ds:
+            return None
+        ds_type = str(getattr(self.ds, "type", "") or "").lower()
+        db_schema = str(getattr(self.ds, "db_schema", "") or "").strip()
+        database = str(getattr(self.ds, "dataBase", "") or "").strip()
+        if ds_type == "pg":
+            return db_schema or None
+        if ds_type in ("mysql", "doris", "starrocks", "ck"):
+            return database or None
+        return "" if not db_schema and not database else None
 
     @staticmethod
     def _table_schema_name(ds, table) -> str:
@@ -1312,9 +1323,9 @@ class LLMService:
                 if not schema and matches:
                     # The connection runs an unqualified name in its default schema, so only a table there
                     # can vouch for it; a same-named granted table in another schema must not.
-                    default_schema = self._default_schema_name().lower()
-                    matches = [entry for entry in matches
-                               if str(entry.get("schemaName", "")).lower() == default_schema]
+                    default_schema = self._default_schema_name()
+                    matches = [entry for entry in matches if default_schema is not None
+                               and str(entry.get("schemaName") or "").lower() == default_schema.lower()]
                     if not matches:
                         unresolved.append({**ref, "reason": "unqualified_table_outside_default_schema"})
                         continue
@@ -1368,6 +1379,14 @@ class LLMService:
                               if (str(e.get('datasourceId')), str(e.get('tableId'))) not in allowed)
         if not unresolved:
             return
+        unqualified = [item for item in unresolved if item.get("reason") == "unqualified_table_outside_default_schema"]
+        if unqualified:
+            # Not a cross-source question: the table exists here, only the schema is missing in the SQL.
+            raise SingleMessageError(orjson.dumps(self._datasource_not_found_payload(
+                "unqualified_table_outside_default_schema",
+                "生成的 SQL 里有表名没写 schema，而这张表不在数据源默认 schema 中，已拒绝执行。请在问题中写明表的完整名称（schema.表名）后重试。",
+                unqualified,
+            )).decode())
 
         entries = self._logical_table_entries()
         matched_other: list[dict[str, Any]] = []
