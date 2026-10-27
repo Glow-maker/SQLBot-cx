@@ -25,6 +25,15 @@ class SQLParserTests(unittest.TestCase):
                     SQLTableRef(name='orders', schema='archive'),
                 })
 
+    def test_platform_type_strings_map_to_sqlglot_dialects(self):
+        # Data sends lowercase type strings; SQL Server SQL uses TOP and brackets.
+        for dialect in ('sqlserver', 'sqlServer'):
+            with self.subTest(dialect=dialect):
+                self.assertEqual(extract_table_refs('SELECT TOP 10 [a] FROM [dbo].[fee]', dialect),
+                                 {SQLTableRef(name='fee', schema='dbo')})
+        self.assertEqual(extract_table_refs('SELECT * FROM "audit"."orders"', 'postgresql'),
+                         {SQLTableRef(name='orders', schema='audit')})
+
     def test_pg_invalid_sql_returns_none_for_permission_gate(self):
         with patch('common.utils.sql_parser.SQLBotLogUtil.warning'):
             self.assertIsNone(extract_table_refs('SELECT * FROM (', dialect='pg'))

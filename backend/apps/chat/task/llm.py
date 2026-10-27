@@ -931,6 +931,9 @@ class LLMService:
             return db_schema or None
         if ds_type in ("mysql", "doris", "starrocks", "ck"):
             return database or None
+        if ds_type == "sqlserver" and not database:
+            # pymssql would connect to the login's default database, not necessarily the one Data catalogued.
+            return None
         return "" if not db_schema and not database else None
 
     @staticmethod

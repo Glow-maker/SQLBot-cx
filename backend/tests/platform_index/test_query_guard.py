@@ -224,8 +224,14 @@ class QueryGuardTests(unittest.TestCase):
         self.assertEqual(resolve([dmgt], 'SELECT * FROM ward', ds_type='dm')[1][0]['reason'], outside)
         self.assertEqual(resolve([dmgt], 'SELECT * FROM ward', ds_type='dm', db_schema='DMGT')[1][0]['reason'], outside)
         self.assertEqual(resolve([dmgt], 'SELECT * FROM dmgt.ward', ds_type='dm', db_schema='DMGT')[0], [dmgt])
+        # SQL Server: the production type string is the dialect; TOP and brackets must parse.
         his = dict(datasourceId=2, tableId=12, name='fee', schemaName='HIS')
-        self.assertEqual(resolve([his], 'SELECT * FROM fee', 'tsql', ds_type='sqlserver', database='HIS')[1][0]['reason'], outside)
+        self.assertEqual(resolve([his], 'SELECT TOP 10 * FROM fee', 'sqlserver', ds_type='sqlserver', database='HIS')[1][0]['reason'], outside)
+        dbo = dict(datasourceId=2, tableId=13, name='fee', schemaName='dbo')
+        self.assertEqual(resolve([dbo], 'SELECT TOP 10 [a] FROM [dbo].[fee]', 'sqlserver', ds_type='sqlserver', db_schema='dbo', database='HIS')[0], [dbo])
+        # No database in the URL: the session database is the login's default, so nothing unqualified is vouched for.
+        bare_fee = dict(datasourceId=2, tableId=14, name='fee', schemaName='')
+        self.assertEqual(resolve([bare_fee], 'SELECT * FROM fee', 'sqlserver', ds_type='sqlserver')[1][0]['reason'], outside)
 
     def test_route_disambiguation_stays_inside_the_name_matches(self):
         first = dict(datasourceId=2, tableId=7, name='orders', schemaName='public')
